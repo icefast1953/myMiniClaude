@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt import create_react_agent  # noqa: N813
 
 from miniclaude.agent.system_prompt import SYSTEM_PROMPT, build_context_message
 from miniclaude.config.app_config import Config
