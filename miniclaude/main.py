@@ -283,8 +283,8 @@ def _handle_command(
         console.print_system(f"未知命令: {cmd}，输入 /help 查看帮助")
 
 
-async def main_tui() -> None:
-    """TUI 模式入口。"""
+def main_tui() -> None:
+    """TUI 模式入口。app.run() 自己管理事件循环。"""
     config = Config.load()
     if not config.llm_api_key:
         print("错误: 未设置 DEEPSEEK_API_KEY")
@@ -305,11 +305,11 @@ async def main_tui() -> None:
     agent = AgentLoop(model, tools, config)
     app = MiniClaudeTUI(agent, config)
     app.set_working_dir(working_dir)
-    app.run()
+    app.run()  # Textual 内部调用 asyncio.run()
 
 
 if __name__ == "__main__":
     if "--tui" in sys.argv:
-        asyncio.run(main_tui())
+        main_tui()
     else:
         asyncio.run(main())
