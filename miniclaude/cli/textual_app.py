@@ -46,6 +46,7 @@ class MiniClaudeTUI(App):
         inp.clear()
         chat = self.query_one("#chat", RichLog)
 
+        # 命令处理
         if user_input.startswith("/"):
             self._handle_command(user_input, chat)
             return
@@ -82,15 +83,28 @@ class MiniClaudeTUI(App):
         inp.focus()
 
     def _handle_command(self, cmd: str, chat: RichLog) -> None:
+        """处理 / 命令。"""
         cmd = cmd.strip().lower()
         if cmd == "/exit":
             self.exit()
         elif cmd == "/help":
-            chat.write("[bold]命令:[/] /exit /help /clear")
+            chat.write("[bold]可用命令:[/]")
+            chat.write("  /exit   — 退出程序")
+            chat.write("  /help   — 显示帮助")
+            chat.write("  /clear  — 清空对话")
+            chat.write("  /model  — 模型信息")
+            chat.write(f"  [dim]当前模型: {self._config.llm_model}[/dim]")
         elif cmd == "/clear":
             chat.clear()
+            chat.write("[dim]对话已清空[/dim]")
+        elif cmd == "/model":
+            chat.write(
+                f"[dim]模型: {self._config.llm_model} | "
+                f"API: {self._config.llm_base_url} | "
+                f"最大轮次: {self._config.max_turns}[/dim]"
+            )
         else:
-            chat.write(f"[dim]未知命令: {cmd}[/dim]")
+            chat.write(f"[dim]未知命令: {cmd}，/help 查看帮助[/dim]")
 
     @staticmethod
     def _fmt(args: dict) -> str:
