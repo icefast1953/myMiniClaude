@@ -72,7 +72,7 @@ async def main() -> None:
             final_text = await agent.run_stream(
                 user_input,
                 working_dir=working_dir,
-                on_text=lambda text: console.render_stream(text),
+                on_text=_on_text(console),
                 on_tool_start=_on_tool_start(console),
                 on_tool_end=_on_tool_end(console),
             )
@@ -97,6 +97,20 @@ async def main() -> None:
             console.hide_thinking()
             console.print_error(f"运行出错: {e}")
             continue
+
+
+def _on_text(console: RichConsole):
+    """返回 on_text 回调 —— 首次收到文本时隐藏 spinner。"""
+    first_text = True
+
+    def handler(text: str) -> None:
+        nonlocal first_text
+        if first_text:
+            console.hide_thinking()
+            first_text = False
+        console.render_stream(text)
+
+    return handler
 
 
 def _on_tool_start(console: RichConsole):
