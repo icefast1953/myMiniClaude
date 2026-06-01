@@ -36,6 +36,13 @@
 - 错误处理：LLM 层指数退避重试（3次），工具层统一返回 `ToolResult(success, error)` 不抛异常
 - 测试：`pytest` 单元测试（每个工具、Config）+ 集成测试（Agent 循环 + Mock LLM），核心路径必测
 
+## 文档
+
+- [架构文档](docs/architecture.md) — 模块依赖与数据流
+- [工具系统](docs/tools.md) — 工具列表与添加指南
+- [LLM 后端](docs/llm_backend.md) — 多后端切换
+- [开发指南](docs/development.md) — 环境搭建与测试
+
 ## 后续扩展
 
 - [ ] 权限控制系统
