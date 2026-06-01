@@ -127,7 +127,7 @@ def _ask_permission(console: RichConsole):
             default="n",
         )
         console._console.print()
-        console.show_thinking()
+        # 权限确认后不重新显示 spinner，避免残留
 
         if choice == "a":
             return True   # 允许并记住
@@ -139,14 +139,9 @@ def _ask_permission(console: RichConsole):
 
 
 def _on_text(console: RichConsole):
-    """返回 on_text 回调 —— 首次收到文本时隐藏 spinner。"""
-    first_text = True
-
+    """返回 on_text 回调 —— 隐藏 spinner 并渲染文本。"""
     def handler(text: str) -> None:
-        nonlocal first_text
-        if first_text:
-            console.hide_thinking()
-            first_text = False
+        console.hide_thinking()
         console.render_stream(text)
 
     return handler
@@ -164,7 +159,6 @@ def _on_tool_end(console: RichConsole):
     """返回 on_tool_end 回调（闭包捕获 console）。"""
     def handler(name: str, output: str) -> None:
         console.show_tool_result(name, output)
-        console.show_thinking()
     return handler
 
 
