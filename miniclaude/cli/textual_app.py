@@ -60,20 +60,26 @@ class MiniClaudeTUI(App):
         chat.write(f"[bold blue]You[/] {user_input}")
 
         try:
+            import asyncio as _asyncio
             pending: list[str] = []
-            await self._agent.run_stream(
-                user_input,
-                working_dir=self._working_dir,
-                context_injection="",
-                on_text=lambda t: chat.write(t, animate=False),
-                on_tool_start=lambda n, a: pending.append(
-                    f"  [bold yellow]🔧 {n}[/] {self._fmt(a)}"
+            await _asyncio.wait_for(
+                self._agent.run_stream(
+                    user_input,
+                    working_dir=self._working_dir,
+                    context_injection="",
+                    on_text=lambda t: chat.write(t, animate=False),
+                    on_tool_start=lambda n, a: pending.append(
+                        f"  [bold yellow]🔧 {n}[/] {self._fmt(a)}"
+                    ),
+                    on_tool_end=lambda n, o: (
+                        chat.write(pending.pop(0) if pending else f"  🔧 {n}"),
+                        chat.write(f"  [dim]  ✓ {o[:100]}[/dim]"),
+                    ),
                 ),
-                on_tool_end=lambda n, o: (
-                    chat.write(pending.pop(0) if pending else f"  🔧 {n}"),
-                    chat.write(f"  [dim]  ✓ {o[:100]}[/dim]"),
-                ),
+                timeout=300,  # 5 分钟超时
             )
+        except _asyncio.TimeoutError:
+            chat.write("[bold red]请求超时（5分钟），已取消[/]")
         except Exception as e:
             chat.write(f"[bold red]错误: {e}[/]")
 
