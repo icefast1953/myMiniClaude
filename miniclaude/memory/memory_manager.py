@@ -1,13 +1,20 @@
 """记忆管理器 —— 读写 memory/ 目录下的 markdown 记忆文件。
 
 格式：YAML frontmatter + Markdown 正文。
+支持可选的 SQLite 后端双写。
 """
+
+from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from miniclaude.storage.sqlite_store import SqliteStore
 
 
 @dataclass
@@ -51,9 +58,10 @@ class Memory:
 class MemoryManager:
     """管理记忆的读写和搜索。"""
 
-    def __init__(self, memory_dir: str | Path = "memory"):
+    def __init__(self, memory_dir: str | Path = "memory", db: SqliteStore | None = None):
         self._dir = Path(memory_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._db = db
         self._cache: dict[str, Memory] = {}
         self._load_all()
 
@@ -63,20 +71,32 @@ class MemoryManager:
             mem = Memory.from_markdown(f.read_text(encoding="utf-8"))
             if mem:
                 self._cache[mem.name] = mem
+        if self._db:
+            for row in self._db.load_memories():
+                if row["name"] not in self._cache:
+                    self._cache[row["name"]] = Memory(
+                        name=row["name"], description=row["description"],
+                        content=row["content"], mem_type=row["mem_type"],
+                    )
 
     def save(self, name: str, description: str, content: str, mem_type: str = "user") -> Memory:
         mem = Memory(name=name, description=description, content=content, mem_type=mem_type)
         (self._dir / mem.filename).write_text(mem.to_markdown(), encoding="utf-8")
+        if self._db:
+            self._db.save_memory(name, description, content, mem_type)
         self._cache[name] = mem
         return mem
 
     def forget(self, name: str) -> bool:
         filepath = self._dir / f"{name}.md"
+        deleted = False
         if filepath.exists():
             filepath.unlink()
-            self._cache.pop(name, None)
-            return True
-        return False
+            deleted = True
+        if self._db:
+            deleted = self._db.delete_memory(name) or deleted
+        self._cache.pop(name, None)
+        return deleted
 
     def recall(self, query: str) -> list[Memory]:
         q = query.lower()

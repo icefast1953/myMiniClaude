@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from datetime import datetime
 
 from miniclaude.agent.agent_loop import AgentLoop
 from miniclaude.agent.context_manager import ContextManager
@@ -15,6 +16,7 @@ from miniclaude.memory.memory_tools import (
     tool_memory_recall,
     tool_memory_save,
 )
+from miniclaude.storage.sqlite_store import SqliteStore
 from miniclaude.tools.permission import PermissionManager, wrap_tool_with_permission
 from miniclaude.tools.tool_bash import create_tool_bash
 from miniclaude.tools.tool_edit import tool_edit
@@ -53,18 +55,24 @@ async def main() -> None:
         console.print_error(f"无法初始化模型: {e}")
         return
 
-    # 4. 初始化上下文管理器
+    # 4. 初始化 SQLite 持久化
+    db_path = os.path.join(os.getcwd(), "miniclaude.db")
+    db = SqliteStore(db_path)
+    stats = db.get_stats()
+    console.print_system(f"[dim]SQLite: {stats['conversations']} 条对话, {stats['memories']} 条记忆[/dim]")
+
+    # 5. 初始化上下文管理器
     ctx_manager = ContextManager(max_turns=config.max_turns)
 
-    # 5. 初始化记忆系统
+    # 6. 初始化记忆系统（双写：文件 + SQLite）
     memory_dir = os.path.join(os.getcwd(), "memory")
-    memory_manager = MemoryManager(memory_dir)
+    memory_manager = MemoryManager(memory_dir, db)
     set_memory_manager(memory_manager)
 
-    # 6. 初始化权限管理器
+    # 7. 初始化权限管理器
     perm_manager = PermissionManager()
 
-    # 6. 初始化工具并包装权限守卫
+    # 8. 初始化工具并包装权限守卫
     working_dir = os.getcwd()
     raw_tools = [
         tool_read,
@@ -84,10 +92,11 @@ async def main() -> None:
         for t in raw_tools
     ]
 
-    # 8. 初始化 Agent
+    # 9. 初始化 Agent
     agent = AgentLoop(model, tools, config, memory_manager)
 
-    # 9. REPL 循环
+    # 10. REPL 循环
+    session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     while True:
         try:
             user_input = _read_input()
@@ -116,8 +125,11 @@ async def main() -> None:
             console.hide_thinking()
             console.finish_assistant()
 
-            # 记录本轮对话
+            # 记录本轮对话（SQLite + ContextManager）
             if final_text:
+                turn_idx = db.get_turn_count(session_id)
+                db.save_turn(session_id, "user", user_input, turn_index=turn_idx)
+                db.save_turn(session_id, "assistant", final_text, turn_index=turn_idx)
                 ctx_manager.add_turn(user_input, final_text)
 
             # 检查是否需要提示压缩
