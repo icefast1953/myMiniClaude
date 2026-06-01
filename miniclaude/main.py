@@ -13,6 +13,8 @@ from miniclaude.tools.tool_edit import tool_edit
 from miniclaude.tools.tool_glob import tool_glob
 from miniclaude.tools.tool_grep import tool_grep
 from miniclaude.tools.tool_read import tool_read
+from miniclaude.tools.tool_todo_write import tool_todo_write
+from miniclaude.tools.tool_web_fetch import tool_web_fetch
 from miniclaude.tools.tool_write import tool_write
 
 HELP_TEXT = """[bold]可用命令:[/]
@@ -54,6 +56,8 @@ async def main() -> None:
         create_tool_bash(working_dir),
         tool_grep,
         tool_glob,
+        tool_web_fetch,
+        tool_todo_write,
     ]
     tools = [
         wrap_tool_with_permission(t, perm_manager, _ask_permission(console))
