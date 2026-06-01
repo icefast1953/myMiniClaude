@@ -7,6 +7,13 @@ from miniclaude.agent.agent_loop import AgentLoop
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
+from miniclaude.memory.memory_manager import MemoryManager
+from miniclaude.memory.memory_tools import (
+    set_memory_manager,
+    tool_memory_forget,
+    tool_memory_recall,
+    tool_memory_save,
+)
 from miniclaude.tools.permission import PermissionManager, wrap_tool_with_permission
 from miniclaude.tools.tool_bash import create_tool_bash
 from miniclaude.tools.tool_edit import tool_edit
@@ -44,10 +51,15 @@ async def main() -> None:
         console.print_error(f"无法初始化模型: {e}")
         return
 
-    # 4. 初始化权限管理器
+    # 4. 初始化记忆系统
+    memory_dir = os.path.join(os.getcwd(), "memory")
+    memory_manager = MemoryManager(memory_dir)
+    set_memory_manager(memory_manager)
+
+    # 5. 初始化权限管理器
     perm_manager = PermissionManager()
 
-    # 5. 初始化工具并包装权限守卫
+    # 6. 初始化工具并包装权限守卫
     working_dir = os.getcwd()
     raw_tools = [
         tool_read,
@@ -58,16 +70,19 @@ async def main() -> None:
         tool_glob,
         tool_web_fetch,
         tool_todo_write,
+        tool_memory_save,
+        tool_memory_recall,
+        tool_memory_forget,
     ]
     tools = [
         wrap_tool_with_permission(t, perm_manager, _ask_permission(console))
         for t in raw_tools
     ]
 
-    # 6. 初始化 Agent
-    agent = AgentLoop(model, tools, config)
+    # 7. 初始化 Agent（注入记忆上下文）
+    agent = AgentLoop(model, tools, config, memory_manager)
 
-    # 7. REPL 循环
+    # 8. REPL 循环
     while True:
         try:
             user_input = _read_input()

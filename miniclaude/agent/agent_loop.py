@@ -8,6 +8,7 @@ from langgraph.prebuilt import create_react_agent  # noqa: N813
 
 from miniclaude.agent.system_prompt import SYSTEM_PROMPT, build_context_message
 from miniclaude.config.app_config import Config
+from miniclaude.memory.memory_manager import MemoryManager
 
 
 class AgentLoop:
@@ -22,18 +23,29 @@ class AgentLoop:
         model: ChatOpenAI,
         tools: list,
         config: Config | None = None,
+        memory_manager: MemoryManager | None = None,
     ):
         self._model = model
         self._tools = tools
         self._config = config or Config.load()
+        self._memory = memory_manager
         self._agent = create_react_agent(
             model=self._model,
             tools=self._tools,
         )
 
+    def _build_context(self, working_dir: str) -> str:
+        """构建包含动态信息 + 记忆摘要的上下文。"""
+        ctx = build_context_message(working_dir)
+        if self._memory:
+            mem_ctx = self._memory.get_context()
+            if mem_ctx:
+                ctx += f"\n\n{mem_ctx}"
+        return ctx
+
     async def run(self, user_input: str, working_dir: str = ".") -> str:
         """执行一次 Agent 对话（非流式，返回最终文本）。"""
-        context = build_context_message(working_dir)
+        context = self._build_context(working_dir)
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=f"{context}\n\n{user_input}"),
@@ -77,7 +89,7 @@ class AgentLoop:
         Returns:
             Agent 的最终文本回复。
         """
-        context = build_context_message(working_dir)
+        context = self._build_context(working_dir)
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=f"{context}\n\n{user_input}"),
