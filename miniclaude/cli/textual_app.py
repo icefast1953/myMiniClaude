@@ -3,6 +3,8 @@
 布局: Header + Chat(RichLog) + Input + Footer
 """
 
+import asyncio as _asyncio
+
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Footer, Header, Input, RichLog
@@ -22,7 +24,7 @@ class MiniClaudeTUI(App):
         self._agent = agent
         self._config = config
         self._working_dir = "."
-        self._running = False
+        self._current_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -51,16 +53,22 @@ class MiniClaudeTUI(App):
             self._handle_command(user_input, chat)
             return
 
-        if self._running:
-            chat.write("[dim]请等待当前请求完成...[/dim]")
-            return
+        # 取消上一个正在运行的请求
+        if self._current_task and not self._current_task.done():
+            self._current_task.cancel()
+            chat.write("[dim]已取消上一个请求[/dim]")
 
-        self._running = True
-        inp.disabled = True
         chat.write(f"[bold blue]You[/] {user_input}")
+        inp.disabled = True
 
+        # 创建异步任务，不阻塞 UI
+        self._current_task = _asyncio.create_task(
+            self._process_message(user_input, chat, inp)
+        )
+
+    async def _process_message(self, user_input: str, chat: RichLog, inp: Input) -> None:
+        """后台处理用户消息。"""
         try:
-            import asyncio as _asyncio
             pending: list[str] = []
             await _asyncio.wait_for(
                 self._agent.run_stream(
@@ -76,17 +84,18 @@ class MiniClaudeTUI(App):
                         chat.write(f"  [dim]  ✓ {o[:100]}[/dim]"),
                     ),
                 ),
-                timeout=300,  # 5 分钟超时
+                timeout=300,
             )
+        except _asyncio.CancelledError:
+            chat.write("[dim]请求已取消[/dim]")
         except _asyncio.TimeoutError:
-            chat.write("[bold red]请求超时（5分钟），已取消[/]")
+            chat.write("[bold red]请求超时（5分钟）[/]")
         except Exception as e:
             chat.write(f"[bold red]错误: {e}[/]")
-
-        chat.write("")
-        self._running = False
-        inp.disabled = False
-        inp.focus()
+        finally:
+            chat.write("")
+            inp.disabled = False
+            inp.focus()
 
     def _handle_command(self, cmd: str, chat: RichLog) -> None:
         """处理 / 命令。"""
