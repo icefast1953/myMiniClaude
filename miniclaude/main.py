@@ -20,7 +20,7 @@ HELP_TEXT = """[bold]可用命令:[/]
   /help       显示此帮助
   /clear      清屏
   /model      显示当前模型信息
-  /allow PAT  添加允许规则 (如 /allow bash:echo*)[/]"""
+  /allow PAT  添加允许规则 (如 /allow bash:echo*)"""
 
 
 async def main() -> None:
