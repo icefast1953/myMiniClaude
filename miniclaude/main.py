@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 from datetime import datetime
 
 from miniclaude.agent.agent_loop import AgentLoop
@@ -282,5 +283,33 @@ def _handle_command(
         console.print_system(f"未知命令: {cmd}，输入 /help 查看帮助")
 
 
+async def main_tui() -> None:
+    """TUI 模式入口。"""
+    config = Config.load()
+    if not config.llm_api_key:
+        print("错误: 未设置 DEEPSEEK_API_KEY")
+        return
+
+    model = create_model(config)
+    working_dir = os.getcwd()
+
+    from miniclaude.tools.tool_bash import create_tool_bash
+    from miniclaude.agent.agent_loop import AgentLoop
+    from miniclaude.cli.textual_app import MiniClaudeTUI
+
+    tools = [
+        tool_read, tool_write, tool_edit,
+        create_tool_bash(working_dir),
+        tool_grep, tool_glob, tool_web_fetch,
+    ]
+    agent = AgentLoop(model, tools, config)
+    app = MiniClaudeTUI(agent, config)
+    app.set_working_dir(working_dir)
+    app.run()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    if "--tui" in sys.argv:
+        asyncio.run(main_tui())
+    else:
+        asyncio.run(main())
