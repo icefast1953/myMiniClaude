@@ -7,6 +7,7 @@ from miniclaude.agent.agent_loop import AgentLoop
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
+from miniclaude.tools.permission import PermissionManager, wrap_tool_with_permission
 from miniclaude.tools.tool_bash import create_tool_bash
 from miniclaude.tools.tool_edit import tool_edit
 from miniclaude.tools.tool_glob import tool_glob
@@ -15,10 +16,11 @@ from miniclaude.tools.tool_read import tool_read
 from miniclaude.tools.tool_write import tool_write
 
 HELP_TEXT = """[bold]可用命令:[/]
-  /exit    退出程序
-  /help    显示此帮助
-  /clear   清屏
-  /model   显示当前模型信息"""
+  /exit       退出程序
+  /help       显示此帮助
+  /clear      清屏
+  /model      显示当前模型信息
+  /allow PAT  添加允许规则 (如 /allow bash:echo*)[/]"""
 
 
 async def main() -> None:
@@ -40,9 +42,12 @@ async def main() -> None:
         console.print_error(f"无法初始化模型: {e}")
         return
 
-    # 4. 初始化工具
+    # 4. 初始化权限管理器
+    perm_manager = PermissionManager()
+
+    # 5. 初始化工具并包装权限守卫
     working_dir = os.getcwd()
-    tools = [
+    raw_tools = [
         tool_read,
         tool_write,
         tool_edit,
@@ -50,11 +55,15 @@ async def main() -> None:
         tool_grep,
         tool_glob,
     ]
+    tools = [
+        wrap_tool_with_permission(t, perm_manager, _ask_permission(console))
+        for t in raw_tools
+    ]
 
-    # 5. 初始化 Agent
+    # 6. 初始化 Agent
     agent = AgentLoop(model, tools, config)
 
-    # 6. REPL 循环
+    # 7. REPL 循环
     while True:
         try:
             user_input = _read_input()
@@ -63,7 +72,7 @@ async def main() -> None:
                 continue
 
             if user_input.startswith("/"):
-                _handle_command(user_input, console)
+                _handle_command(user_input, console, perm_manager)
                 continue
 
             console.print_user(user_input)
@@ -97,6 +106,36 @@ async def main() -> None:
             console.hide_thinking()
             console.print_error(f"运行出错: {e}")
             continue
+
+
+def _ask_permission(console: RichConsole):
+    """返回 on_ask 回调 —— 通过 CLI 询问用户是否允许工具执行。"""
+    def handler(tool_name: str, key: str, args: dict, reason: str) -> bool | None:
+        console.hide_thinking()
+        console._console.print()
+        console._console.print(
+            f"  [bold yellow]🔒 权限确认[/] — {reason}"
+        )
+        console._console.print(f"  [dim]工具: {tool_name}[/dim]")
+        if key:
+            console._console.print(f"  [dim]目标: {key}[/dim]")
+
+        from rich.prompt import Prompt
+        choice = Prompt.ask(
+            "  [y=允许一次 / a=允许本次会话 / n=拒绝]",
+            choices=["y", "a", "n"],
+            default="n",
+        )
+        console._console.print()
+        console.show_thinking()
+
+        if choice == "a":
+            return True   # 允许并记住
+        elif choice == "y":
+            return None   # 仅本次允许
+        return False      # 拒绝
+
+    return handler
 
 
 def _on_text(console: RichConsole):
@@ -135,7 +174,7 @@ def _read_input() -> str:
     return Prompt.ask("")
 
 
-def _handle_command(cmd: str, console: RichConsole) -> None:
+def _handle_command(cmd: str, console: RichConsole, perm_manager: PermissionManager) -> None:
     """处理 / 开头的命令。"""
     cmd = cmd.strip().lower()
 
@@ -153,6 +192,14 @@ def _handle_command(cmd: str, console: RichConsole) -> None:
             f"API: {config.llm_base_url}\n"
             f"最大轮次: {config.max_turns}"
         )
+    elif cmd.startswith("/allow"):
+        parts = cmd.split(None, 1)
+        if len(parts) == 2:
+            pattern = parts[1]
+            perm_manager.add_rule(pattern, "allow")
+            console.print_system(f"规则已添加: {pattern} → allow")
+        else:
+            console.print_system("用法: /allow <pattern>  如 /allow bash:echo*")
     else:
         console.print_system(f"未知命令: {cmd}，输入 /help 查看帮助")
 
