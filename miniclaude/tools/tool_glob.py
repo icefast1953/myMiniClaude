@@ -2,57 +2,38 @@
 
 from pathlib import Path
 
-from miniclaude.tools.tool_base import BaseTool, ToolResult
+from langchain_core.tools import tool
 
 
-class ToolGlob(BaseTool):
-    """按 glob 模式匹配文件路径。结果按修改时间降序排列。"""
+@tool("glob")
+async def tool_glob(pattern: str, path: str = ".") -> str:
+    """按 glob 模式匹配文件路径。支持 ** 递归匹配。
+    结果按修改时间降序排列（最近修改的在前），最多返回 500 条。
 
-    name: str = "glob"
-    description: str = (
-        "按 glob 模式匹配文件路径。"
-        "支持 ** 递归匹配。"
-        "结果按修改时间降序排列（最近修改的在前），最多返回 500 条。"
-    )
+    Args:
+        pattern: glob 匹配模式，如 '**/*.py' 或 'src/**/*.ts'
+        path: 搜索起始目录，默认为当前工作目录
+    """
+    try:
+        search_path = Path(path)
+        if not search_path.exists():
+            return f"错误: 路径不存在: {path}"
 
-    @property
-    def parameters(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "glob 匹配模式，如 '**/*.py' 或 'src/**/*.ts'",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "搜索起始目录，默认为当前工作目录",
-                },
-            },
-            "required": ["pattern"],
-        }
+        matches = list(search_path.glob(pattern))
 
-    async def execute(self, pattern: str, path: str = ".") -> ToolResult:
-        try:
-            search_path = Path(path)
-            if not search_path.exists():
-                return ToolResult(False, "", f"路径不存在: {path}")
+        if not matches:
+            return "未找到匹配的文件"
 
-            matches = list(search_path.glob(pattern))
+        matches.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
 
-            if not matches:
-                return ToolResult(True, "未找到匹配的文件")
+        total = len(matches)
+        matches = matches[:500]
 
-            matches.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+        output_lines = [str(m) for m in matches]
+        if total > 500:
+            output_lines.append(f"\n... 还有 {total - 500} 个结果未显示")
 
-            total = len(matches)
-            matches = matches[:500]
+        return "\n".join(output_lines)
 
-            output_lines = [str(m) for m in matches]
-            if total > 500:
-                output_lines.append(f"\n... 还有 {total - 500} 个结果未显示")
-
-            return ToolResult(True, "\n".join(output_lines))
-
-        except Exception as e:
-            return ToolResult(False, "", f"glob 搜索时出错: {e}")
+    except Exception as e:
+        return f"错误: glob 搜索时出错: {e}"

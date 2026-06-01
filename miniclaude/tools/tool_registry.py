@@ -1,12 +1,10 @@
 """工具注册中心 —— 管理所有工具的注册、查找和 Schema 生成。"""
 
-from langchain_core.tools import BaseTool as LangChainBaseTool
-
-from miniclaude.tools.tool_base import BaseTool
+from langchain_core.tools import BaseTool
 
 
 class ToolRegistry:
-    """工具注册中心。管理所有已注册的工具，提供查找和 schema 生成。"""
+    """工具注册中心。管理所有已注册的工具。"""
 
     def __init__(self):
         self._tools: dict[str, BaseTool] = {}
@@ -23,13 +21,9 @@ class ToolRegistry:
         """获取所有已注册的工具。"""
         return list(self._tools.values())
 
-    def get_langchain_tools(self) -> list[LangChainBaseTool]:
+    def get_langchain_tools(self) -> list[BaseTool]:
         """获取 langchain 兼容的工具列表（用于 langgraph Agent）。"""
         return list(self._tools.values())
-
-    def get_schemas(self) -> list[dict]:
-        """生成所有工具的 OpenAI tool call schema 列表。"""
-        return [tool.to_schema() for tool in self._tools.values()]
 
     def list_names(self) -> list[str]:
         """列出所有工具名称。"""

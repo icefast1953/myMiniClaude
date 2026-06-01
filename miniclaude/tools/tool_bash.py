@@ -2,55 +2,30 @@
 
 import subprocess
 
-from miniclaude.tools.tool_base import BaseTool, ToolResult
+from langchain_core.tools import StructuredTool, tool
 
 
-class ToolBash(BaseTool):
-    """执行 Shell 命令。安全措施：超时控制 + 输出截断 + 工作目录隔离。"""
+def create_tool_bash(working_dir: str = ".") -> StructuredTool:
+    """创建 Bash 工具，绑定到指定的工作目录。
 
-    name: str = "bash"
-    description: str = (
-        "在当前工作目录中执行 Shell 命令。"
-        "返回 stdout、stderr 和退出码。"
-        "输出最多截断为 100KB。"
-        "使用 timeout 参数控制超时秒数（默认 120）。"
-    )
+    因为 tool_bash 需要 working_dir 状态，
+    使用工厂函数而不是 @tool 装饰器。
+    """
 
-    def __init__(self, working_dir: str = ".", **kwargs):
-        super().__init__(**kwargs)
-        self._cwd = working_dir
-
-    def set_working_dir(self, path: str) -> None:
-        """更新工作目录。"""
-        self._cwd = path
-
-    @property
-    def parameters(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "要执行的 Shell 命令",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "超时秒数，默认 120",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "命令的简短描述，说明用途",
-                },
-            },
-            "required": ["command", "description"],
-        }
-
-    async def execute(
-        self,
+    async def _bash(
         command: str,
         description: str = "",
         timeout: int = 120,
-    ) -> ToolResult:
+    ) -> str:
+        """在当前工作目录中执行 Shell 命令。
+
+        返回 stdout、stderr 和退出码。输出最多截断 100KB。
+
+        Args:
+            command: 要执行的 Shell 命令
+            description: 命令的简短说明（用于审核）
+            timeout: 超时秒数，默认 120
+        """
         try:
             result = subprocess.run(
                 command,
@@ -58,11 +33,21 @@ class ToolBash(BaseTool):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=self._cwd,
+                cwd=working_dir,
             )
 
-            stdout = self._truncate(result.stdout, 100_000)
-            stderr = self._truncate(result.stderr, 100_000)
+            def _truncate(text: str, max_chars: int = 100_000) -> str:
+                if len(text) <= max_chars:
+                    return text
+                half = max_chars // 2
+                return (
+                    text[:half]
+                    + f"\n\n... [截断 {len(text) - max_chars} 字符] ...\n\n"
+                    + text[-half:]
+                )
+
+            stdout = _truncate(result.stdout)
+            stderr = _truncate(result.stderr)
 
             output_parts = []
             if stdout:
@@ -73,24 +58,21 @@ class ToolBash(BaseTool):
                 output_parts.append(f"[退出码: {result.returncode}]")
 
             output = "\n".join(output_parts) if output_parts else "(无输出)"
-            success = result.returncode == 0
 
-            return ToolResult(success, output)
+            if result.returncode != 0:
+                return f"错误: 命令执行失败\n{output}"
+
+            return output
 
         except subprocess.TimeoutExpired:
-            return ToolResult(False, "", f"命令超时（{timeout} 秒）: {command}")
+            return f"错误: 命令超时（{timeout} 秒）: {command}"
         except FileNotFoundError:
-            return ToolResult(False, "", f"命令未找到: {command.split()[0] if command else command}")
+            return f"错误: 命令未找到: {command.split()[0] if command else command}"
         except Exception as e:
-            return ToolResult(False, "", f"执行命令时出错: {e}")
+            return f"错误: 执行命令时出错: {e}"
 
-    @staticmethod
-    def _truncate(text: str, max_chars: int) -> str:
-        if len(text) <= max_chars:
-            return text
-        half = max_chars // 2
-        return (
-            text[:half]
-            + f"\n\n... [截断 {len(text) - max_chars} 字符] ...\n\n"
-            + text[-half:]
-        )
+    return StructuredTool.from_function(
+        coroutine=_bash,
+        name="bash",
+        description="在当前工作目录中执行 Shell 命令。返回 stdout/stderr 和退出码。输出最多截断 100KB。",
+    )
