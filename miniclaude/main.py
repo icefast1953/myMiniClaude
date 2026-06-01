@@ -10,6 +10,8 @@ from miniclaude.agent.subagent import SubagentRunner
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
+from miniclaude.mcp.client import MCPClient
+from miniclaude.mcp.tool_adapter import adapt_mcp_tools
 from miniclaude.memory.memory_manager import MemoryManager
 from miniclaude.memory.memory_tools import (
     set_memory_manager,
@@ -57,6 +59,17 @@ async def main() -> None:
         console.print_error(f"无法初始化模型: {e}")
         return
 
+    # 3.5. 初始化 MCP（连接外部工具服务器）
+    mcp_client = MCPClient("mcp.json", console._console)
+    mcp_client.parse_servers()
+    if mcp_client._servers:
+        console.print_system("[dim]正在连接 MCP Servers...[/dim]")
+        await mcp_client.connect_all()
+        mcp_tools = adapt_mcp_tools(mcp_client.get_all_tools())
+        console.print_system(f"[dim]MCP: {len(mcp_tools)} 个外部工具[/dim]")
+    else:
+        mcp_tools = []
+
     # 4. 初始化 SQLite 持久化
     db_path = os.path.join(os.getcwd(), "miniclaude.db")
     db = SqliteStore(db_path)
@@ -93,6 +106,9 @@ async def main() -> None:
     subagent_runner = SubagentRunner(model, raw_tools)
     task_tool = setup_task_tool(subagent_runner, working_dir)
     raw_tools.append(task_tool)
+
+    # 9.5. 添加 MCP 工具（不经过权限守卫，MCP Server 自行管理权限）
+    raw_tools.extend(mcp_tools)
     tools = [
         wrap_tool_with_permission(t, perm_manager, _ask_permission(console))
         for t in raw_tools
