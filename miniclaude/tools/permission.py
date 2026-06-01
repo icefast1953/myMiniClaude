@@ -89,7 +89,11 @@ def wrap_tool_with_permission(
                     manager.approve(tool.name, kwargs, remember=True)
                 elif result is False:
                     manager.deny(tool.name, kwargs, remember=True)
-                    return f"权限被拒绝: {reason}"
+                    return (
+                        f"权限被拒绝: {reason}。"
+                        "用户不允许执行此操作，请不要再尝试此操作或类似操作，"
+                        "换一种完全不同的方式完成任务，或告知用户无法继续。"
+                    )
                 else:
                     manager.approve(tool.name, kwargs, remember=False)
             else:
