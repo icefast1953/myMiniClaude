@@ -93,25 +93,25 @@ def wrap_tool_with_permission(
     """
     original_ainvoke = tool.ainvoke
 
-    async def guarded_ainvoke(input_data):
-        args = input_data if isinstance(input_data, dict) else {}
-        allowed, reason = manager.check(tool.name, args)
+    async def guarded_ainvoke(input_data, *args, **kwargs):
+        args_dict = input_data if isinstance(input_data, dict) else {}
+        allowed, reason = manager.check(tool.name, args_dict)
 
         if not allowed:
-            key = manager._extract_key(tool.name, args)
+            key = manager._extract_key(tool.name, args_dict)
             if on_ask:
-                result = on_ask(tool.name, key, args, reason)
+                result = on_ask(tool.name, key, args_dict, reason)
                 if result is True:
-                    manager.approve(tool.name, args, remember=True)
+                    manager.approve(tool.name, args_dict, remember=True)
                 elif result is False:
-                    manager.deny(tool.name, args, remember=True)
+                    manager.deny(tool.name, args_dict, remember=True)
                     return f"权限被拒绝: {reason}"
                 else:
-                    manager.approve(tool.name, args, remember=False)
+                    manager.approve(tool.name, args_dict, remember=False)
             else:
                 return f"权限被拒绝: {reason}"
 
-        return await original_ainvoke(input_data)
+        return await original_ainvoke(input_data, *args, **kwargs)
 
     # StructuredTool 是 Pydantic 模型，用 object.__setattr__ 绕过验证
     object.__setattr__(tool, "ainvoke", guarded_ainvoke)
