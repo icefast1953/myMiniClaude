@@ -6,6 +6,7 @@ from datetime import datetime
 
 from miniclaude.agent.agent_loop import AgentLoop
 from miniclaude.agent.context_manager import ContextManager
+from miniclaude.agent.subagent import SubagentRunner
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
@@ -19,6 +20,7 @@ from miniclaude.memory.memory_tools import (
 from miniclaude.storage.sqlite_store import SqliteStore
 from miniclaude.tools.permission import PermissionManager, wrap_tool_with_permission
 from miniclaude.tools.tool_bash import create_tool_bash
+from miniclaude.tools.tool_task import setup_task_tool
 from miniclaude.tools.tool_edit import tool_edit
 from miniclaude.tools.tool_glob import tool_glob
 from miniclaude.tools.tool_grep import tool_grep
@@ -72,7 +74,7 @@ async def main() -> None:
     # 7. 初始化权限管理器
     perm_manager = PermissionManager()
 
-    # 8. 初始化工具并包装权限守卫
+    # 8. 初始化基础工具
     working_dir = os.getcwd()
     raw_tools = [
         tool_read,
@@ -87,15 +89,19 @@ async def main() -> None:
         tool_memory_recall,
         tool_memory_forget,
     ]
+    # 9. 初始化子代理系统
+    subagent_runner = SubagentRunner(model, raw_tools)
+    task_tool = setup_task_tool(subagent_runner, working_dir)
+    raw_tools.append(task_tool)
     tools = [
         wrap_tool_with_permission(t, perm_manager, _ask_permission(console))
         for t in raw_tools
     ]
 
-    # 9. 初始化 Agent
+    # 11. 初始化 Agent
     agent = AgentLoop(model, tools, config, memory_manager)
 
-    # 10. REPL 循环
+    # 12. REPL 循环
     session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     while True:
         try:
