@@ -43,12 +43,16 @@ class AgentLoop:
                 ctx += f"\n\n{mem_ctx}"
         return ctx
 
-    async def run(self, user_input: str, working_dir: str = ".") -> str:
+    async def run(
+        self, user_input: str, working_dir: str = ".", context_injection: str = ""
+    ) -> str:
         """执行一次 Agent 对话（非流式，返回最终文本）。"""
-        context = self._build_context(working_dir)
+        base_ctx = self._build_context(working_dir)
+        if context_injection:
+            base_ctx += f"\n\n{context_injection}"
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"{context}\n\n{user_input}"),
+            HumanMessage(content=f"{base_ctx}\n\n{user_input}"),
         ]
 
         result = await self._agent.ainvoke(
@@ -73,26 +77,18 @@ class AgentLoop:
         self,
         user_input: str,
         working_dir: str = ".",
+        context_injection: str = "",
         on_text: Callable[[str], None] | None = None,
         on_tool_start: Callable[[str, dict], None] | None = None,
         on_tool_end: Callable[[str, str], None] | None = None,
     ) -> str:
-        """流式执行 Agent 对话，通过回调实时输出。
-
-        Args:
-            user_input: 用户输入
-            working_dir: 工作目录
-            on_text: 文本增量回调 (text: str) -> None
-            on_tool_start: 工具开始回调 (tool_name: str, args: dict) -> None
-            on_tool_end: 工具结束回调 (tool_name: str, output: str) -> None
-
-        Returns:
-            Agent 的最终文本回复。
-        """
-        context = self._build_context(working_dir)
+        """流式执行 Agent 对话，通过回调实时输出。"""
+        base_ctx = self._build_context(working_dir)
+        if context_injection:
+            base_ctx += f"\n\n{context_injection}"
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"{context}\n\n{user_input}"),
+            HumanMessage(content=f"{base_ctx}\n\n{user_input}"),
         ]
 
         final_text = ""

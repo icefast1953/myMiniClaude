@@ -4,6 +4,7 @@ import asyncio
 import os
 
 from miniclaude.agent.agent_loop import AgentLoop
+from miniclaude.agent.context_manager import ContextManager
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
@@ -29,7 +30,8 @@ HELP_TEXT = """[bold]可用命令:[/]
   /help       显示此帮助
   /clear      清屏
   /model      显示当前模型信息
-  /allow PAT  添加允许规则 (如 /allow bash:echo*)"""
+  /allow PAT  添加允许规则 (如 /allow bash:echo*)
+  /compact    压缩对话上下文（总结历史）"""
 
 
 async def main() -> None:
@@ -51,12 +53,15 @@ async def main() -> None:
         console.print_error(f"无法初始化模型: {e}")
         return
 
-    # 4. 初始化记忆系统
+    # 4. 初始化上下文管理器
+    ctx_manager = ContextManager(max_turns=config.max_turns)
+
+    # 5. 初始化记忆系统
     memory_dir = os.path.join(os.getcwd(), "memory")
     memory_manager = MemoryManager(memory_dir)
     set_memory_manager(memory_manager)
 
-    # 5. 初始化权限管理器
+    # 6. 初始化权限管理器
     perm_manager = PermissionManager()
 
     # 6. 初始化工具并包装权限守卫
@@ -79,10 +84,10 @@ async def main() -> None:
         for t in raw_tools
     ]
 
-    # 7. 初始化 Agent（注入记忆上下文）
+    # 8. 初始化 Agent
     agent = AgentLoop(model, tools, config, memory_manager)
 
-    # 8. REPL 循环
+    # 9. REPL 循环
     while True:
         try:
             user_input = _read_input()
@@ -91,15 +96,18 @@ async def main() -> None:
                 continue
 
             if user_input.startswith("/"):
-                _handle_command(user_input, console, perm_manager)
+                _handle_command(user_input, console, perm_manager, ctx_manager)
                 continue
 
             console.print_user(user_input)
             console.show_thinking()
 
+            # 注入上下文摘要
+            context_injection = ctx_manager.get_injection()
             final_text = await agent.run_stream(
                 user_input,
                 working_dir=working_dir,
+                context_injection=context_injection,
                 on_text=_on_text(console),
                 on_tool_start=_on_tool_start(console),
                 on_tool_end=_on_tool_end(console),
@@ -107,6 +115,16 @@ async def main() -> None:
 
             console.hide_thinking()
             console.finish_assistant()
+
+            # 记录本轮对话
+            if final_text:
+                ctx_manager.add_turn(user_input, final_text)
+
+            # 检查是否需要提示压缩
+            if ctx_manager.should_compact():
+                console.print_system(
+                    f"[dim]对话已 {ctx_manager.turn_count} 轮，建议 /compact 压缩上下文[/dim]"
+                )
 
             if final_text and console._renderer.buffer == "":
                 console._console.print(final_text)
@@ -187,7 +205,10 @@ def _read_input() -> str:
     return Prompt.ask("")
 
 
-def _handle_command(cmd: str, console: RichConsole, perm_manager: PermissionManager) -> None:
+def _handle_command(
+    cmd: str, console: RichConsole, perm_manager: PermissionManager,
+    ctx_manager: ContextManager,
+) -> None:
     """处理 / 开头的命令。"""
     cmd = cmd.strip().lower()
 
@@ -213,6 +234,16 @@ def _handle_command(cmd: str, console: RichConsole, perm_manager: PermissionMana
             console.print_system(f"规则已添加: {pattern} → allow")
         else:
             console.print_system("用法: /allow <pattern>  如 /allow bash:echo*")
+    elif cmd == "/compact":
+        t = ctx_manager.turn_count
+        if t == 0:
+            console.print_system("没有需要压缩的对话历史")
+        else:
+            prompt = ctx_manager.build_compact_prompt()
+            ctx_manager.compact(
+                f"以下是从 {t} 轮对话中总结的关键信息: {prompt[:300]}"
+            )
+            console.print_system(f"已压缩 {t} 轮对话，摘要将注入后续上下文")
     else:
         console.print_system(f"未知命令: {cmd}，输入 /help 查看帮助")
 
