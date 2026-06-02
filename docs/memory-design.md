@@ -51,13 +51,19 @@ await agent.ainvoke({"messages": [HumanMessage(...)]}, config=config)
 | 阈值 | 默认值 | 动作 |
 |------|------|------|
 | WARNING | 4000 | 终端显示用量提示 |
-| COMPACT | 8000 | 生成压缩建议 |
+| COMPACT | 8000 | 自动压缩 |
 | KEEP_RECENT | 5 轮 | 压缩后保留 |
 
+### compact 执行流程
+
 ```
-每轮 → TokenBudgeter.check(agent, session_id)
-  → 读 checkpoint 消息列表 → 估算 token
-  → 超阈值 → 提示 / 生成 compact prompt
+每轮对话前 → TokenBudgeter.check()
+  → should_compact=True
+    → 分离旧消息 (保留最近 KEEP_RECENT*2 条)
+    → 取旧消息最近 30 条 → LLM 生成 200 字摘要
+    → agent.update_state() 替换为 [summary_msg] + recent_msgs
+    → 日志: "压缩完成: 48 条 → 1 条摘要 (节省 ~3500 tokens)"
+  → should_warn → 仅显示用量提示
 ```
 
 ## 长期记忆
