@@ -110,9 +110,15 @@ async def main() -> None:
             console.print_user(user_input)
             console.show_thinking()
 
-            # Token 预算
+            # Token 预算检查 + 自动压缩
             st = budgeter.check(agent._agent, session_id)
-            if st.should_warn:
+            if st.should_compact:
+                console.print_system(
+                    f"[dim]Token 超限 (~{st.total_tokens})，自动压缩...[/dim]")
+                result = await budgeter.compact(
+                    agent._agent, session_id, model)
+                console.print_system(f"[dim]{result}[/dim]")
+            elif st.should_warn:
                 console.print_system(
                     f"[dim]Token: ~{st.total_tokens} ({st.message_count}条)[/dim]")
 
@@ -208,9 +214,12 @@ def _cmd(cmd, console, perm, sessions, memory, sid,
         console.print_system(f"规则: {p[1]} → allow")
     elif cmd == "/compact":
         st = budgeter.check(agent._agent, sid)
-        console.print_system(
-            f"Token: ~{st.total_tokens} | {st.message_count}条 | "
-            f"警告:{st.should_warn} | 需压缩:{st.should_compact}")
+        if st.should_compact:
+            console.print_system(
+                f"Token: ~{st.total_tokens} ({st.message_count}条) — 下次对话将自动压缩")
+        else:
+            console.print_system(
+                f"Token: ~{st.total_tokens} | {st.message_count}条 | 无需压缩")
     else:
         console.print_system(f"未知: {cmd}")
     return (sid, is_first, turns)
