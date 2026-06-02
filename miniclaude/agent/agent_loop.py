@@ -1,10 +1,11 @@
-"""Agent 循环 —— 基于 langgraph create_react_agent 的 Agent 核心。"""
+"""Agent 循环 —— langgraph + SqliteSaver checkpoint 持久化。"""
 
 from collections.abc import Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent  # noqa: N813
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.prebuilt import create_react_agent
 
 from miniclaude.agent.system_prompt import SYSTEM_PROMPT, build_context_message
 from miniclaude.config.app_config import Config
@@ -12,109 +13,73 @@ from miniclaude.memory.memory_manager import MemoryManager
 
 
 class AgentLoop:
-    """miniClaude Agent 循环。
-
-    封装 langgraph ReAct Agent，提供流式对话接口。
-    通过回调函数与 CLI 解耦。
-    """
+    """miniClaude Agent — SqliteSaver 自动持久化对话状态。"""
 
     def __init__(
         self,
         model: ChatOpenAI,
         tools: list,
-        config: Config | None = None,
+        checkpointer: SqliteSaver,
         memory_manager: MemoryManager | None = None,
+        config: Config | None = None,
     ):
         self._model = model
-        self._tools = tools
-        self._config = config or Config.load()
+        self._checkpointer = checkpointer
         self._memory = memory_manager
+        self._config = config or Config.load()
         self._agent = create_react_agent(
-            model=self._model,
-            tools=self._tools,
+            model=self._model, tools=tools, checkpointer=self._checkpointer,
         )
 
-    def _build_context(self, working_dir: str) -> str:
-        """构建包含动态信息 + 记忆摘要的上下文。"""
+    def _build_input(self, user_input: str, working_dir: str,
+                     is_first: bool = False) -> list:
         ctx = build_context_message(working_dir)
         if self._memory:
-            mem_ctx = self._memory.get_context()
-            if mem_ctx:
-                ctx += f"\n\n{mem_ctx}"
-        return ctx
+            mem = self._memory.get_context()
+            if mem:
+                ctx += f"\n\n{mem}"
+        msgs = []
+        if is_first:
+            msgs.append(SystemMessage(content=SYSTEM_PROMPT))
+        msgs.append(HumanMessage(content=f"{ctx}\n\n{user_input}"))
+        return msgs
 
-    async def run(
-        self, user_input: str, working_dir: str = ".", context_injection: str = ""
-    ) -> str:
-        """执行一次 Agent 对话（非流式，返回最终文本）。"""
-        base_ctx = self._build_context(working_dir)
-        if context_injection:
-            base_ctx += f"\n\n{context_injection}"
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"{base_ctx}\n\n{user_input}"),
-        ]
-
-        result = await self._agent.ainvoke(
-            {"messages": messages},
-            config={"recursion_limit": self._config.max_turns},
-        )
-
-        # 提取最终回复（反向遍历，取最后一条 AI 文本消息）
-        for msg in reversed(result.get("messages", [])):
-            if (
-                not isinstance(msg, HumanMessage)
-                and not isinstance(msg, SystemMessage)
-                and isinstance(msg.content, str)
-                and msg.content
-                and not (hasattr(msg, "tool_calls") and msg.tool_calls)
-            ):
-                return msg.content
-
-        return ""
+    async def run(self, user_input: str, session_id: str = "default",
+                  working_dir: str = ".", is_first: bool = False) -> str:
+        messages = self._build_input(user_input, working_dir, is_first)
+        cfg = {
+            "configurable": {"thread_id": session_id},
+            "recursion_limit": self._config.max_turns,
+        }
+        result = await self._agent.ainvoke({"messages": messages}, config=cfg)
+        return self._extract(result)
 
     async def run_stream(
-        self,
-        user_input: str,
-        working_dir: str = ".",
-        context_injection: str = "",
+        self, user_input: str, session_id: str = "default",
+        working_dir: str = ".", is_first: bool = False,
         on_text: Callable[[str], None] | None = None,
         on_tool_start: Callable[[str, dict], None] | None = None,
         on_tool_end: Callable[[str, str], None] | None = None,
     ) -> str:
-        """流式执行 Agent 对话，通过回调实时输出。"""
-        base_ctx = self._build_context(working_dir)
-        if context_injection:
-            base_ctx += f"\n\n{context_injection}"
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"{base_ctx}\n\n{user_input}"),
-        ]
+        messages = self._build_input(user_input, working_dir, is_first)
+        cfg = {
+            "configurable": {"thread_id": session_id},
+            "recursion_limit": self._config.max_turns,
+        }
 
         final_text = ""
-        seen_count = 2  # 已处理的消息数（system + user）
+        seen = len(messages)
 
         async for event in self._agent.astream(
-            {"messages": messages},
-            stream_mode="values",
-            config={"recursion_limit": self._config.max_turns},
+            {"messages": messages}, stream_mode="values", config=cfg,
         ):
             if "messages" not in event:
                 continue
-
-            all_msgs = event["messages"]
-            new_msgs = all_msgs[seen_count:]
-
-            for msg in new_msgs:
-                msg_type = type(msg).__name__
-
-                # 流式文本增量
-                if msg_type == "AIMessageChunk":
-                    if msg.content and on_text:
-                        on_text(msg.content)
-
-                # 完整 AI 消息
-                elif msg_type == "AIMessage":
+            for msg in event["messages"][seen:]:
+                t = type(msg).__name__
+                if t == "AIMessageChunk" and msg.content and on_text:
+                    on_text(msg.content)
+                elif t == "AIMessage":
                     if msg.content and not (
                         hasattr(msg, "tool_calls") and msg.tool_calls
                     ):
@@ -122,18 +87,19 @@ class AgentLoop:
                     elif hasattr(msg, "tool_calls") and msg.tool_calls:
                         for tc in msg.tool_calls:
                             if on_tool_start:
-                                name = tc.get("name", "unknown") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
-                                args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-                                on_tool_start(name, args)
-
-                # 工具执行结果
-                elif msg_type == "ToolMessage":
-                    if on_tool_end:
-                        on_tool_end(
-                            getattr(msg, "name", "unknown"),
-                            str(msg.content),
-                        )
-
-                seen_count += 1
-
+                                on_tool_start(
+                                    tc.get("name", "?") if isinstance(tc, dict) else getattr(tc, "name", "?"),
+                                    tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {}),
+                                )
+                elif t == "ToolMessage" and on_tool_end:
+                    on_tool_end(getattr(msg, "name", "?"), str(msg.content))
+                seen += 1
         return final_text
+
+    @staticmethod
+    def _extract(result: dict) -> str:
+        for msg in reversed(result.get("messages", [])):
+            if (isinstance(msg.content, str) and msg.content
+                    and not (hasattr(msg, "tool_calls") and msg.tool_calls)):
+                return msg.content
+        return ""

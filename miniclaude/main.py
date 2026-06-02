@@ -1,13 +1,12 @@
-"""miniClaude 入口 —— 初始化组件、启动 REPL 循环。"""
+"""miniClaude 入口 —— REPL 循环 + 会话管理 + 长期记忆。"""
 
 import asyncio
 import os
 import sys
-from datetime import datetime
 
 from miniclaude.agent.agent_loop import AgentLoop
-from miniclaude.agent.context_manager import ContextManager
 from miniclaude.agent.subagent import SubagentRunner
+from miniclaude.agent.token_budgeter import TokenBudgeter
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
@@ -15,12 +14,10 @@ from miniclaude.mcp.client import MCPClient
 from miniclaude.mcp.tool_adapter import adapt_mcp_tools
 from miniclaude.memory.memory_manager import MemoryManager
 from miniclaude.memory.memory_tools import (
-    set_memory_manager,
-    tool_memory_forget,
-    tool_memory_recall,
-    tool_memory_save,
+    set_memory_manager, tool_memory_forget,
+    tool_memory_recall, tool_memory_save,
 )
-from miniclaude.storage.sqlite_store import SqliteStore
+from miniclaude.storage.session_store import SessionStore
 from miniclaude.tools.permission import PermissionManager, wrap_tool_with_permission
 from miniclaude.tools.tool_bash import create_tool_bash
 from miniclaude.tools.tool_task import setup_task_tool
@@ -32,280 +29,210 @@ from miniclaude.tools.tool_todo_write import tool_todo_write
 from miniclaude.tools.tool_web_fetch import tool_web_fetch
 from miniclaude.tools.tool_write import tool_write
 
-HELP_TEXT = """[bold]可用命令:[/]
-  /exit       退出程序
-  /help       显示此帮助
-  /clear      清屏
-  /model      显示当前模型信息
-  /allow PAT  添加允许规则 (如 /allow bash:echo*)
-  /compact    压缩对话上下文（总结历史）"""
+HELP_TEXT = """[bold]命令:[/]
+  /exit /help /clear /model
+  /sessions  会话列表
+  /new       新会话
+  /switch ID 切换会话
+  /memory    长期记忆
+  /compact   Token 预算
+  /allow PAT 权限规则"""
 
 
 async def main() -> None:
-    """miniClaude 主入口。"""
-    # 1. 加载配置
     config = Config.load()
     if not config.llm_api_key:
-        print("错误: 未设置 DEEPSEEK_API_KEY，请在 .env 文件中配置")
-        return
+        print("错误: 未设置 DEEPSEEK_API_KEY"); return
 
-    # 2. 初始化控制台
     console = RichConsole()
     console.print_welcome()
 
-    # 3. 初始化模型
     try:
         model = create_model(config)
     except Exception as e:
-        console.print_error(f"无法初始化模型: {e}")
-        return
+        console.print_error(f"模型初始化失败: {e}"); return
 
-    # 3.5. 初始化 MCP（连接外部工具服务器）
+    # ── 会话存储 + SqliteSaver ──
+    db_path = os.path.join(os.getcwd(), "miniclaude.db")
+    sessions = SessionStore(db_path)
+    session_id = sessions.create("新会话")
+    is_first = True
+    console.print_system(f"[dim]会话: {session_id[:20]}...[/dim]")
+
+    # ── 长期记忆 ──
+    memory = MemoryManager(os.path.join(os.getcwd(), "memory"))
+    set_memory_manager(memory)
+
+    # ── Token 预算 ──
+    budgeter = TokenBudgeter()
+
+    # ── MCP ──
     mcp_client = MCPClient("mcp.json", console._console)
     mcp_client.parse_servers()
+    mcp_tools = []
     if mcp_client._servers:
-        console.print_system("[dim]正在连接 MCP Servers...[/dim]")
+        console.print_system("[dim]连接 MCP...[/dim]")
         await mcp_client.connect_all()
         mcp_tools = adapt_mcp_tools(mcp_client.get_all_tools())
-        console.print_system(f"[dim]MCP: {len(mcp_tools)} 个外部工具[/dim]")
-    else:
-        mcp_tools = []
 
-    # 4. 初始化 SQLite 持久化
-    db_path = os.path.join(os.getcwd(), "miniclaude.db")
-    db = SqliteStore(db_path)
-    stats = db.get_stats()
-    console.print_system(f"[dim]SQLite: {stats['conversations']} 条对话, {stats['memories']} 条记忆[/dim]")
+    # ── 权限 ──
+    perm = PermissionManager()
 
-    # 5. 初始化上下文管理器
-    ctx_manager = ContextManager(max_turns=config.max_turns)
+    # ── 工具 ──
+    wd = os.getcwd()
+    raw = [tool_read, tool_write, tool_edit, create_tool_bash(wd),
+           tool_grep, tool_glob, tool_web_fetch, tool_todo_write,
+           tool_memory_save, tool_memory_recall, tool_memory_forget]
+    raw.append(setup_task_tool(SubagentRunner(model, raw), wd))
+    raw.extend(mcp_tools)
+    tools = [wrap_tool_with_permission(t, perm, _ask(console)) for t in raw]
 
-    # 6. 初始化记忆系统（双写：文件 + SQLite）
-    memory_dir = os.path.join(os.getcwd(), "memory")
-    memory_manager = MemoryManager(memory_dir, db)
-    set_memory_manager(memory_manager)
+    # ── Agent ──
+    agent = AgentLoop(model, tools, sessions.checkpointer, memory, config)
 
-    # 7. 初始化权限管理器
-    perm_manager = PermissionManager()
-
-    # 8. 初始化基础工具
-    working_dir = os.getcwd()
-    raw_tools = [
-        tool_read,
-        tool_write,
-        tool_edit,
-        create_tool_bash(working_dir),
-        tool_grep,
-        tool_glob,
-        tool_web_fetch,
-        tool_todo_write,
-        tool_memory_save,
-        tool_memory_recall,
-        tool_memory_forget,
-    ]
-    # 9. 初始化子代理系统
-    subagent_runner = SubagentRunner(model, raw_tools)
-    task_tool = setup_task_tool(subagent_runner, working_dir)
-    raw_tools.append(task_tool)
-
-    # 9.5. 添加 MCP 工具（不经过权限守卫，MCP Server 自行管理权限）
-    raw_tools.extend(mcp_tools)
-    tools = [
-        wrap_tool_with_permission(t, perm_manager, _ask_permission(console))
-        for t in raw_tools
-    ]
-
-    # 11. 初始化 Agent
-    agent = AgentLoop(model, tools, config, memory_manager)
-
-    # 12. REPL 循环
-    session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # ── REPL ──
+    turns = 0
     while True:
         try:
-            user_input = _read_input()
-
-            if not user_input.strip():
-                continue
+            user_input = _read()
+            if not user_input.strip(): continue
 
             if user_input.startswith("/"):
-                _handle_command(user_input, console, perm_manager, ctx_manager)
+                sid, is_first, turns = _cmd(
+                    user_input, console, perm, sessions, memory,
+                    session_id, budgeter, agent, is_first, turns)
+                if sid == "EXIT": break
+                if sid != session_id:
+                    session_id = sid
+                    turns = 0
                 continue
 
             console.print_user(user_input)
             console.show_thinking()
 
-            # 注入上下文摘要
-            context_injection = ctx_manager.get_injection()
-            final_text = await agent.run_stream(
-                user_input,
-                working_dir=working_dir,
-                context_injection=context_injection,
+            # Token 预算
+            st = budgeter.check(agent._agent, session_id)
+            if st.should_warn:
+                console.print_system(
+                    f"[dim]Token: ~{st.total_tokens} ({st.message_count}条)[/dim]")
+
+            final = await agent.run_stream(
+                user_input, session_id=session_id,
+                working_dir=wd, is_first=is_first,
                 on_text=_on_text(console),
                 on_tool_start=_on_tool_start(console),
                 on_tool_end=_on_tool_end(console),
             )
+            is_first = False
+            turns += 1
+            sessions.update(session_id, turns)
 
-            console.hide_thinking()
-            console.finish_assistant()
-
-            # 记录本轮对话（SQLite + ContextManager）
-            if final_text:
-                turn_idx = db.get_turn_count(session_id)
-                db.save_turn(session_id, "user", user_input, turn_index=turn_idx)
-                db.save_turn(session_id, "assistant", final_text, turn_index=turn_idx)
-                ctx_manager.add_turn(user_input, final_text)
-
-            # 检查是否需要提示压缩
-            if ctx_manager.should_compact():
-                console.print_system(
-                    f"[dim]对话已 {ctx_manager.turn_count} 轮，建议 /compact 压缩上下文[/dim]"
-                )
-
-            if final_text and console._renderer.buffer == "":
-                console._console.print(final_text)
+            console.hide_thinking(); console.finish_assistant()
+            if final and console._renderer.buffer == "":
+                console._console.print(final)
 
         except KeyboardInterrupt:
-            console.hide_thinking()
-            console.finish_assistant()
-            console.print_system("[dim]已中断，输入新消息或 /exit 退出[/dim]")
-            continue
-
+            console.hide_thinking(); console.finish_assistant()
+            console.print_system("[dim]已中断[/dim]"); continue
         except EOFError:
-            console.print_system("再见！")
-            break
-
+            console.print_system("再见！"); break
         except Exception as e:
             console.hide_thinking()
-            console.print_error(f"运行出错: {e}")
-            continue
+            console.print_error(f"运行出错: {e}"); continue
 
 
-def _ask_permission(console: RichConsole):
-    """返回 on_ask 回调 —— 通过 CLI 询问用户是否允许工具执行。"""
-    def handler(tool_name: str, key: str, args: dict, reason: str) -> bool | None:
+# ── 回调 ──
+
+def _ask(console: RichConsole):
+    def h(name, key, args, reason):
         console.hide_thinking()
-        console._console.print()
-        console._console.print(
-            f"  [bold yellow]🔒 权限确认[/] — {reason}"
-        )
-        console._console.print(f"  [dim]工具: {tool_name}[/dim]")
-        if key:
-            console._console.print(f"  [dim]目标: {key}[/dim]")
-
+        console._console.print(f"\n  [bold yellow]🔒 {reason}[/] [dim]{name}[/]")
         from rich.prompt import Prompt
-        choice = Prompt.ask(
-            "  [y=允许一次 / a=允许本次会话 / n=拒绝]",
-            choices=["y", "a", "n"],
-            default="n",
-        )
+        c = Prompt.ask("  [y=一次/a=记住/n=拒绝]", choices=["y","a","n"], default="n")
         console._console.print()
-        # 权限确认后不重新显示 spinner，避免残留
+        console.show_thinking()
+        if c == "a": return True
+        if c == "y": return None
+        return False
+    return h
 
-        if choice == "a":
-            return True   # 允许并记住
-        elif choice == "y":
-            return None   # 仅本次允许
-        return False      # 拒绝
+def _on_text(c): return lambda t: (c.hide_thinking(), c.render_stream(t))
+def _on_tool_start(c): return lambda n, a: (c.hide_thinking(), c.show_tool_call(n, a))
+def _on_tool_end(c): return lambda n, o: c.show_tool_result(n, o)
 
-    return handler
-
-
-def _on_text(console: RichConsole):
-    """返回 on_text 回调 —— 隐藏 spinner 并渲染文本。"""
-    def handler(text: str) -> None:
-        console.hide_thinking()
-        console.render_stream(text)
-
-    return handler
-
-
-def _on_tool_start(console: RichConsole):
-    """返回 on_tool_start 回调（闭包捕获 console）。"""
-    def handler(name: str, args: dict) -> None:
-        console.hide_thinking()
-        console.show_tool_call(name, args)
-    return handler
-
-
-def _on_tool_end(console: RichConsole):
-    """返回 on_tool_end 回调（闭包捕获 console）。"""
-    def handler(name: str, output: str) -> None:
-        console.show_tool_result(name, output)
-    return handler
-
-
-def _read_input() -> str:
-    """读取用户输入。"""
+def _read() -> str:
     from rich.prompt import Prompt
     return Prompt.ask("")
 
 
-def _handle_command(
-    cmd: str, console: RichConsole, perm_manager: PermissionManager,
-    ctx_manager: ContextManager,
-) -> None:
-    """处理 / 开头的命令。"""
-    cmd = cmd.strip().lower()
+# ── 命令 ──
+
+def _cmd(cmd, console, perm, sessions, memory, sid,
+         budgeter, agent, is_first, turns):
+    cmd = cmd.strip().lower(); p = cmd.split(None, 1)
 
     if cmd == "/exit":
-        console.print_system("再见！")
-        raise EOFError()
+        console.print_system("再见！"); return ("EXIT", is_first, turns)
     elif cmd == "/help":
         console._console.print(HELP_TEXT)
     elif cmd == "/clear":
         os.system("cls" if os.name == "nt" else "clear")
     elif cmd == "/model":
-        config = Config.load()
-        console.print_system(
-            f"模型: {config.llm_model}\n"
-            f"API: {config.llm_base_url}\n"
-            f"最大轮次: {config.max_turns}"
-        )
-    elif cmd.startswith("/allow"):
-        parts = cmd.split(None, 1)
-        if len(parts) == 2:
-            pattern = parts[1]
-            perm_manager.add_rule(pattern, "allow")
-            console.print_system(f"规则已添加: {pattern} → allow")
+        c = Config.load()
+        console.print_system(f"{c.llm_model} | {c.llm_base_url} | max_turns={c.max_turns}")
+    elif cmd == "/sessions":
+        sl = sessions.list(10)
+        for s in sl:
+            mk = " ←" if s["id"] == sid else ""
+            console._console.print(f"  {s['id'][:22]} {s['title']}({s['turn_count']}轮){mk}")
+    elif cmd == "/new":
+        sid = sessions.create()
+        console.print_system(f"新会话: {sid[:20]}...")
+        return (sid, True, 0)
+    elif cmd.startswith("/switch") and len(p) > 1:
+        prefix = p[1]
+        matched = [s for s in sessions.list(50) if s["id"].startswith(prefix)]
+        if matched:
+            sid = matched[0]["id"]
+            console.print_system(f"切换到: {sid[:20]}...")
+            return (sid, False, matched[0]["turn_count"])
+        console.print_system("未找到")
+    elif cmd == "/memory":
+        idx = memory.get_index()
+        if idx:
+            console._console.print(f"[bold]长期记忆({len(memory.list_all())}条):[/]\n{idx}")
         else:
-            console.print_system("用法: /allow <pattern>  如 /allow bash:echo*")
+            console.print_system("暂无")
+    elif cmd.startswith("/allow") and len(p) > 1:
+        perm.add_rule(p[1], "allow")
+        console.print_system(f"规则: {p[1]} → allow")
     elif cmd == "/compact":
-        t = ctx_manager.turn_count
-        if t == 0:
-            console.print_system("没有需要压缩的对话历史")
-        else:
-            prompt = ctx_manager.build_compact_prompt()
-            ctx_manager.compact(
-                f"以下是从 {t} 轮对话中总结的关键信息: {prompt[:300]}"
-            )
-            console.print_system(f"已压缩 {t} 轮对话，摘要将注入后续上下文")
+        st = budgeter.check(agent._agent, sid)
+        console.print_system(
+            f"Token: ~{st.total_tokens} | {st.message_count}条 | "
+            f"警告:{st.should_warn} | 需压缩:{st.should_compact}")
     else:
-        console.print_system(f"未知命令: {cmd}，输入 /help 查看帮助")
+        console.print_system(f"未知: {cmd}")
+    return (sid, is_first, turns)
 
+
+# ── TUI ──
 
 def main_tui() -> None:
-    """TUI 模式入口。app.run() 自己管理事件循环。"""
     config = Config.load()
     if not config.llm_api_key:
-        print("错误: 未设置 DEEPSEEK_API_KEY")
-        return
-
+        print("错误: 未设置 DEEPSEEK_API_KEY"); return
     model = create_model(config)
-    working_dir = os.getcwd()
-
-    from miniclaude.tools.tool_bash import create_tool_bash
-    from miniclaude.agent.agent_loop import AgentLoop
+    wd = os.getcwd()
+    memory = MemoryManager(os.path.join(wd, "memory"))
+    sessions = SessionStore(os.path.join(wd, "miniclaude.db"))
     from miniclaude.cli.textual_app import MiniClaudeTUI
-
-    tools = [
-        tool_read, tool_write, tool_edit,
-        create_tool_bash(working_dir),
-        tool_grep, tool_glob, tool_web_fetch,
-    ]
-    agent = AgentLoop(model, tools, config)
+    tools = [tool_read, tool_write, tool_edit, create_tool_bash(wd),
+             tool_grep, tool_glob, tool_web_fetch]
+    agent = AgentLoop(model, tools, sessions.checkpointer, memory, config)
     app = MiniClaudeTUI(agent, config)
-    app.set_working_dir(working_dir)
-    app.run()  # Textual 内部调用 asyncio.run()
+    app.set_working_dir(wd)
+    app.run()
 
 
 if __name__ == "__main__":
