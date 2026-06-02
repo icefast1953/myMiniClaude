@@ -94,6 +94,10 @@ class AgentLoop:
                 continue
             for msg in event["messages"][seen:]:
                 t = type(msg).__name__
+                # 跳过系统消息和空内容
+                if t == "SystemMessage" or not getattr(msg, "content", None):
+                    seen += 1
+                    continue
                 if t == "AIMessageChunk" and msg.content and on_text:
                     on_text(msg.content)
                 elif t == "AIMessage":
