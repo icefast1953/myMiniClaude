@@ -72,7 +72,7 @@ class AgentLoop:
         on_tool_start: Callable[[str, dict], None] | None = None,
         on_tool_end: Callable[[str, str], None] | None = None,
     ) -> str:
-        messages = self._build_input(user_input, working_dir, is_first)
+        messages = self._build_input(user_input, working_dir)
         cfg = {
             "configurable": {"thread_id": session_id},
             "recursion_limit": self._config.max_turns,
