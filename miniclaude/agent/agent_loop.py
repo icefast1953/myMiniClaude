@@ -1,13 +1,12 @@
-"""Agent 循环 —— langgraph + SqliteSaver checkpoint 持久化。"""
+"""Agent 循环 —— langgraph + AsyncSqliteSaver checkpoint 持久化。"""
 
 from collections.abc import Callable
-from typing import TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import MessagesState
-from langgraph.prebuilt import create_react_agent
 
 from miniclaude.agent.system_prompt import SYSTEM_PROMPT, build_context_message
 from miniclaude.config.app_config import Config
@@ -18,24 +17,19 @@ class MiniClaudeState(MessagesState):
     """扩展 MessagesState，加入自适应压缩所需的分类上下文。
 
     task_context 由 TaskClassifier.profile() 写入，TokenBudgeter 读取。
-    字段: {profile: dict, recent_events: list, task_history: list, stage_history: list}
-    PR2 前此字段为空 dict，compact 使用默认阈值。
-
-    remaining_steps 是 create_react_agent 的必须字段（递归限制追踪）。
     """
 
-    remaining_steps: int
     task_context: dict
 
 
 class AgentLoop:
-    """miniClaude Agent — SqliteSaver 自动持久化对话状态。"""
+    """miniClaude Agent — AsyncSqliteSaver 自动持久化对话状态。"""
 
     def __init__(
         self,
         model: ChatOpenAI,
         tools: list,
-        checkpointer: SqliteSaver,
+        checkpointer: AsyncSqliteSaver,
         memory_manager: MemoryManager | None = None,
         config: Config | None = None,
     ):
@@ -43,29 +37,27 @@ class AgentLoop:
         self._checkpointer = checkpointer
         self._memory = memory_manager
         self._config = config or Config.load()
-        self._agent = create_react_agent(
+        self._agent = create_agent(
             model=self._model,
             tools=tools,
+            system_prompt=SYSTEM_PROMPT,
             checkpointer=self._checkpointer,
             state_schema=MiniClaudeState,
         )
 
-    def _build_input(self, user_input: str, working_dir: str,
-                     is_first: bool = False) -> list:
+    def _build_input(self, user_input: str, working_dir: str) -> list:
         ctx = build_context_message(working_dir)
         if self._memory:
             mem = self._memory.get_context()
             if mem:
                 ctx += f"\n\n{mem}"
-        msgs = []
-        if is_first:
-            msgs.append(SystemMessage(content=SYSTEM_PROMPT))
-        msgs.append(HumanMessage(content=f"{ctx}\n\n{user_input}"))
+        # system_prompt 已由 create_agent 管理，只需 HumanMessage
+        msgs = [HumanMessage(content=f"{ctx}\n\n{user_input}")]
         return msgs
 
     async def run(self, user_input: str, session_id: str = "default",
                   working_dir: str = ".", is_first: bool = False) -> str:
-        messages = self._build_input(user_input, working_dir, is_first)
+        messages = self._build_input(user_input, working_dir)
         cfg = {
             "configurable": {"thread_id": session_id},
             "recursion_limit": self._config.max_turns,

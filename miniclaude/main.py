@@ -58,6 +58,7 @@ async def main() -> None:
     # ── 会话存储 + SqliteSaver ──
     db_path = os.path.join(os.getcwd(), "miniclaude.db")
     sessions = SessionStore(db_path)
+    await sessions.async_init()
     session_id = sessions.create("新会话")
     is_first = True
     console.print_system(f"[dim]会话: {session_id[:20]}...[/dim]")

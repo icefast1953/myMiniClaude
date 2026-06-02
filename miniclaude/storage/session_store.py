@@ -12,11 +12,18 @@ class SessionStore:
 
     def __init__(self, db_path: str = "miniclaude.db"):
         self._db_path = str(Path(db_path).resolve())
-        self._checkpointer = AsyncSqliteSaver.from_conn_string(self._db_path)
+        self._checkpointer = None
         self._ensure_table()
+
+    async def async_init(self):
+        """异步初始化 checkpointer（需要 event loop）。"""
+        cm = AsyncSqliteSaver.from_conn_string(self._db_path)
+        self._checkpointer = await cm.__aenter__()
 
     @property
     def checkpointer(self):
+        if self._checkpointer is None:
+            raise RuntimeError("SessionStore.async_init() must be called first")
         return self._checkpointer
 
     def _ensure_table(self) -> None:
