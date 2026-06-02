@@ -38,6 +38,7 @@ HELP_TEXT = """[bold]命令:[/]
   /switch ID 切换会话
   /memory    长期记忆
   /compact   Token 预算
+  /token     Token 消耗统计
   /mode TYPE 任务模式 (debug/code-gen/test/refactor/explain/env/auto)
   /allow PAT 权限规则"""
 
@@ -236,8 +237,29 @@ def _cmd(cmd, console, perm, sessions, memory, sid,
             except ValueError:
                 valid = ", ".join(t.value for t in TaskType)
                 console.print_system(f"无效模式。可用: {valid}")
+    elif cmd.startswith("/allow") and len(p) > 1:
         perm.add_rule(p[1], "allow")
         console.print_system(f"规则: {p[1]} → allow")
+    elif cmd == "/token":
+        try:
+            state = agent._agent.get_state(
+                {"configurable": {"thread_id": sid}})
+            msgs = state.values.get("messages", []) if state and state.values else []
+            from collections import Counter
+            type_counts = Counter()
+            type_tokens = Counter()
+            for m in msgs:
+                t = type(m).__name__
+                type_counts[t] += 1
+                type_tokens[t] += len(str(getattr(m, "content", "")))
+            total = int(sum(type_tokens.values()) / 3.5)
+            console._console.print(
+                f"[bold]Token ({len(msgs)}条消息):[/]  ~{total} tokens")
+            for t, n in type_counts.most_common():
+                tk = int(type_tokens[t] / 3.5)
+                console._console.print(f"  {t}: {n}条, ~{tk} tokens")
+        except Exception as e:
+            console.print_system(f"无法读取: {e}")
     elif cmd == "/compact":
         try:
             state = agent._agent.get_state(
