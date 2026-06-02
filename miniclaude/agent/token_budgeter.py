@@ -7,7 +7,13 @@
 
 from dataclasses import dataclass
 
-from langchain_core.messages import AIMessage, RemoveMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    ToolMessage,
+)
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from miniclaude.agent.compressor import (
@@ -20,6 +26,35 @@ from miniclaude.agent.compressor import (
 WARNING_THRESHOLD = 4000
 COMPACT_THRESHOLD = 8000
 KEEP_RECENT = 5
+
+
+def _safe_split_point(messages: list[BaseMessage], min_keep: int) -> int:
+    """找安全切分点——不会把 ToolMessage 和它的 tool_calls 拆开。
+
+    从末尾往前找，确保拆分边界是 HumanMessage（新一轮对话开始），
+    或者是一个不带 tool_calls 的 AIMessage。
+    """
+    if len(messages) <= min_keep:
+        return 0
+
+    split = len(messages) - min_keep
+    # 往后扫描，保证不以孤立的 ToolMessage 开头
+    for i in range(split, len(messages)):
+        msg = messages[i]
+        if isinstance(msg, HumanMessage):
+            return i  # 安全：新一轮用户输入开始
+        if isinstance(msg, AIMessage) and not (
+            hasattr(msg, "tool_calls") and msg.tool_calls
+        ):
+            # 带 tool_calls 的 AIMessage 后面跟 ToolMessage，不能从这里切
+            # 不带 tool_calls 的纯文本 AIMessage 是安全的切分点之后
+            pass
+        # ToolMessage 前面必须有 AIMessage.tool_calls，不能作为开头
+    # 回退：从 split 点往前找最近的 HumanMessage
+    for i in range(split, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            return i
+    return max(0, split)
 
 
 @dataclass
@@ -93,8 +128,9 @@ class TokenBudgeter:
             keep_rounds = policy.get("keep_recent", self._keep)
 
         keep_count = keep_rounds * 2
-        old_msgs = list(messages[:-keep_count])
-        recent_msgs = list(messages[-keep_count:])
+        split = _safe_split_point(messages, keep_count)
+        old_msgs = list(messages[:split])
+        recent_msgs = list(messages[split:])
         old_tokens_before = estimate_tokens(old_msgs)
 
         # L1
