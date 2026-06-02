@@ -4,19 +4,19 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
 class SessionStore:
-    """管理会话生命周期。对话内容由 SqliteSaver checkpoint 管理。"""
+    """管理会话生命周期。对话内容由 AsyncSqliteSaver checkpoint 管理。"""
 
     def __init__(self, db_path: str = "miniclaude.db"):
         self._db_path = str(Path(db_path).resolve())
-        self._checkpointer = SqliteSaver.from_conn_string(self._db_path)
+        self._checkpointer = AsyncSqliteSaver.from_conn_string(self._db_path)
         self._ensure_table()
 
     @property
-    def checkpointer(self) -> SqliteSaver:
+    def checkpointer(self):
         return self._checkpointer
 
     def _ensure_table(self) -> None:

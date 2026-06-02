@@ -20,8 +20,11 @@ class MiniClaudeState(MessagesState):
     task_context 由 TaskClassifier.profile() 写入，TokenBudgeter 读取。
     字段: {profile: dict, recent_events: list, task_history: list, stage_history: list}
     PR2 前此字段为空 dict，compact 使用默认阈值。
+
+    remaining_steps 是 create_react_agent 的必须字段（递归限制追踪）。
     """
 
+    remaining_steps: int
     task_context: dict
 
 
