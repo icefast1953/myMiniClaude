@@ -39,37 +39,37 @@ class Stage(str, Enum):
 
 COMPRESSION_POLICIES: dict[TaskType, dict] = {
     TaskType.CODE_GEN: {
-        "compact_threshold": 6000, "warning_threshold": 4800,
+        "compact_threshold": 16000, "warning_threshold": 12800,
         "keep_recent": 3, "prefer_level": "L3",
-        "description": "code-gen: aggressive, info rebuildable",
+        "description": "code-gen: 目标明确，激进压缩",
     },
     TaskType.DEBUG: {
-        "compact_threshold": 12000, "warning_threshold": 9600,
+        "compact_threshold": 64000, "warning_threshold": 51200,
         "keep_recent": 8, "prefer_level": "L1",
-        "description": "debug: highest risk, keep all context",
+        "description": "debug: 保留最多上下文，尽量不丢细节",
     },
     TaskType.EXPLAIN: {
-        "compact_threshold": 9000, "warning_threshold": 7200,
+        "compact_threshold": 24000, "warning_threshold": 19200,
         "keep_recent": 5, "prefer_level": "L2",
-        "description": "explain: moderate context needed",
+        "description": "explain: 适中",
     },
     TaskType.REFACTOR: {
-        "compact_threshold": 10000, "warning_threshold": 8000,
+        "compact_threshold": 32000, "warning_threshold": 25600,
         "keep_recent": 6, "prefer_level": "L2",
-        "description": "refactor: keep structure constraints",
+        "description": "refactor: 保留结构约束",
     },
     TaskType.TEST: {
-        "compact_threshold": 8000, "warning_threshold": 6400,
+        "compact_threshold": 24000, "warning_threshold": 19200,
         "keep_recent": 5, "prefer_level": "L2",
-        "description": "test: balance accuracy and readability",
+        "description": "test: 兼顾准确性和可读性",
     },
     TaskType.ENV: {
-        "compact_threshold": 14000, "warning_threshold": 11200,
+        "compact_threshold": 64000, "warning_threshold": 51200,
         "keep_recent": 10, "prefer_level": "L1",
-        "description": "env: most detail-sensitive",
+        "description": "env: 最吃细节，压缩最保守",
     },
     TaskType.UNKNOWN: {
-        "compact_threshold": 8000, "warning_threshold": 6400,
+        "compact_threshold": 32000, "warning_threshold": 25600,
         "keep_recent": 5, "prefer_level": "L2",
         "description": "default",
     },

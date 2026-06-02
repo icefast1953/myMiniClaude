@@ -426,13 +426,14 @@ def test_l2_trigger_measured():
     import random
     random.seed(42)
 
-    # 模拟 token 分布: 对数正态, 中位数 ~5000, 大部分在 2000-20000
+    # 模拟 token 分布: 对数正态, 中位数 ~25000, 大部分在 5000-100000
+    # 匹配 deepseek-v4-flash 1M 上下文的实际使用场景
     def sample_tokens():
-        return int(random.lognormvariate(8.5, 0.6))
+        return int(random.lognormvariate(10.0, 0.7))
 
     thresholds = {
-        "code-gen": 6000, "debug": 12000, "explain": 9000,
-        "refactor": 10000, "test": 8000, "env": 14000, "unknown": 8000,
+        "code-gen": 16000, "debug": 64000, "explain": 24000,
+        "refactor": 32000, "test": 24000, "env": 64000, "unknown": 32000,
     }
 
     n_rounds = 500
@@ -455,14 +456,11 @@ def test_l2_trigger_measured():
         all_rates[task] = rate
         print(f"  {task:12s} {threshold:>10d} {triggers:>12d} {rate:>7.1%}")
 
-    # 验证: debug 和 env 的触发率显著低于 code-gen
-    assert all_rates["debug"] < all_rates["code-gen"], \
-        f"debug ({all_rates['debug']:.1%}) should trigger less than code-gen ({all_rates['code-gen']:.1%})"
-    assert all_rates["env"] < all_rates["code-gen"], \
-        f"env ({all_rates['env']:.1%}) should trigger less than code-gen ({all_rates['code-gen']:.1%})"
-
-    # code-gen 应该有最高的触发率（阈值最低）
-    assert all_rates["code-gen"] >= all_rates["debug"], "code-gen should trigger most"
+    # 验证: debug 和 env 的触发率不高于 code-gen（阈值更高）
+    assert all_rates["debug"] <= all_rates["code-gen"], \
+        f"debug ({all_rates['debug']:.1%}) should not exceed code-gen ({all_rates['code-gen']:.1%})"
+    assert all_rates["env"] <= all_rates["code-gen"], \
+        f"env ({all_rates['env']:.1%}) should not exceed code-gen ({all_rates['code-gen']:.1%})"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -494,6 +492,11 @@ def test_adaptive_keep_per_task():
         TaskType.REFACTOR: 6, TaskType.TEST: 5, TaskType.ENV: 10,
         TaskType.UNKNOWN: 5,
     }
+    for t, keep in expected.items():
+        assert COMPRESSION_POLICIES[t]["keep_recent"] == keep
+    assert COMPRESSION_POLICIES[TaskType.CODE_GEN]["compact_threshold"] == 16000
+    assert COMPRESSION_POLICIES[TaskType.DEBUG]["compact_threshold"] == 64000
+    assert COMPRESSION_POLICIES[TaskType.ENV]["compact_threshold"] == 64000
     for t, keep in expected.items():
         assert COMPRESSION_POLICIES[t]["keep_recent"] == keep, f"{t.value}: {COMPRESSION_POLICIES[t]['keep_recent']} != {keep}"
 

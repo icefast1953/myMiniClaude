@@ -23,8 +23,8 @@ from miniclaude.agent.compressor import (
     estimate_tokens,
 )
 
-WARNING_THRESHOLD = 4000
-COMPACT_THRESHOLD = 8000
+WARNING_THRESHOLD = 25600
+COMPACT_THRESHOLD = 32000
 KEEP_RECENT = 5
 
 
