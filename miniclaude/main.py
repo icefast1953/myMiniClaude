@@ -104,7 +104,7 @@ async def main() -> None:
             if not user_input.strip(): continue
 
             if user_input.startswith("/"):
-                sid, is_first, turns = _cmd(
+                sid, is_first, turns = await _cmd(
                     user_input, console, perm, sessions, memory,
                     session_id, budgeter, agent, is_first, turns)
                 if sid == "EXIT": break
@@ -185,8 +185,8 @@ def _read() -> str:
 
 # ── 命令 ──
 
-def _cmd(cmd, console, perm, sessions, memory, sid,
-         budgeter, agent, is_first, turns):
+async def _cmd(cmd, console, perm, sessions, memory, sid,
+               budgeter, agent, is_first, turns):
     cmd = cmd.strip().lower(); p = cmd.split(None, 1)
 
     if cmd == "/exit":
@@ -242,7 +242,7 @@ def _cmd(cmd, console, perm, sessions, memory, sid,
         console.print_system(f"规则: {p[1]} → allow")
     elif cmd == "/token":
         try:
-            state = agent._agent.get_state(
+            state = await agent._agent.aget_state(
                 {"configurable": {"thread_id": sid}})
             msgs = state.values.get("messages", []) if state and state.values else []
             from collections import Counter
@@ -262,7 +262,7 @@ def _cmd(cmd, console, perm, sessions, memory, sid,
             console.print_system(f"无法读取: {e}")
     elif cmd == "/compact":
         try:
-            state = agent._agent.get_state(
+            state = await agent._agent.aget_state(
                 {"configurable": {"thread_id": sid}})
             msgs = state.values.get("messages", []) if state and state.values else []
             total_tokens = estimate_tokens(msgs)
