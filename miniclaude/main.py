@@ -9,6 +9,8 @@ from miniclaude.agent.subagent import SubagentRunner
 from miniclaude.agent.compressor import estimate_tokens
 from miniclaude.agent.task_classifier import TaskClassifier, TaskType
 from miniclaude.agent.token_budgeter import TokenBudgeter
+from miniclaude.skills.executor import execute as execute_skill
+from miniclaude.skills.registry import SkillRegistry
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
 from miniclaude.llm.model_factory import create_model
@@ -31,16 +33,14 @@ from miniclaude.tools.tool_todo_write import tool_todo_write
 from miniclaude.tools.tool_web_fetch import tool_web_fetch
 from miniclaude.tools.tool_write import tool_write
 
-HELP_TEXT = """[bold]命令:[/]
-  /exit /help /clear /model
-  /sessions  会话列表
-  /new       新会话
-  /switch ID 切换会话
-  /memory    长期记忆
-  /compact   Token 预算
-  /token     Token 消耗统计
-  /mode TYPE 任务模式 (debug/code-gen/test/refactor/explain/env/auto)
-  /allow PAT 权限规则"""
+HELP_TEXT_NORMAL = (
+    "/exit /help /clear /model /sessions /new /switch /memory "
+    "/compact /token /mode /allow /skills /code-review /explain-code /summarize"
+)
+HELP_TEXT = f"""[bold]命令:[/]
+  {HELP_TEXT_NORMAL}
+[bold]Skills:[/]
+  以 / 开头，skill body 注入当前上下文，让 Agent 切换角色执行"""
 
 
 async def main() -> None:
@@ -76,9 +76,11 @@ async def main() -> None:
     memory = MemoryManager(os.path.join(os.getcwd(), "memory"))
     set_memory_manager(memory)
 
-    # ── 任务分类 + Token 预算 ──
+    # ── 任务分类 + Token 预算 + Skills ──
     classifier = TaskClassifier()
     budgeter = TokenBudgeter()
+    skill_registry = SkillRegistry()
+    subagent_runner = None  # 延迟初始化，等 model 和 tools 就绪后设置
 
     # ── MCP ──
     mcp_client = MCPClient("mcp.json", console._console)
@@ -103,6 +105,7 @@ async def main() -> None:
 
     # ── Agent ──
     agent = AgentLoop(model, tools, sessions.checkpointer, memory, config)
+    subagent_runner = SubagentRunner(model, raw)
 
     # ── REPL ──
     turns = 0
@@ -112,9 +115,25 @@ async def main() -> None:
             if not user_input.strip(): continue
 
             if user_input.startswith("/"):
+                # 先尝试 skill 匹配
+                if not user_input.startswith("/s"):
+                    cmd = user_input[1:].split(None, 1)[0]
+                    skill = skill_registry.get(cmd)
+                    if skill:
+                        user_input = user_input[len(f"/{cmd}"):].strip() or user_input
+                        await _run_skill(
+                            skill, user_input, console, agent, sessions,
+                            session_id, wd, subagent_runner,
+                            classifier, budgeter, model)
+                        is_first = False
+                        turns += 1
+                        sessions.update(session_id, turns)
+                        continue
+                # 内置命令
                 sid, is_first, turns = await _cmd(
                     user_input, console, perm, sessions, memory,
-                    session_id, budgeter, agent, is_first, turns)
+                    session_id, budgeter, agent, is_first, turns,
+                    skill_registry)
                 if sid == "EXIT": break
                 if sid != session_id:
                     session_id = sid
@@ -189,6 +208,37 @@ def _on_text(c): return lambda t: (c.hide_thinking(), c.render_stream(t))
 def _on_tool_start(c): return lambda n, a: (c.hide_thinking(), c.show_tool_call(n, a))
 def _on_tool_end(c): return lambda n, o: c.show_tool_result(n, o)
 
+async def _run_skill(skill, user_input, console, agent, sessions,
+                     session_id, wd, subagent_runner,
+                     classifier, budgeter, model):
+    """执行 skill: 注入上下文 → 分类 → compact → run_stream。"""
+    console.print_system(f"[dim]Skill: /{skill.name} — {skill.description}[/dim]")
+
+    text, injected_msg = await execute_skill(
+        skill, user_input, wd, agent, session_id, subagent_runner)
+
+    if text:
+        # subagent 模式，直接输出结果
+        console._console.print(text)
+        return
+    if injected_msg:
+        # inject 模式，正常走分类+压缩+流式流程
+        task_profile = await classifier.profile(user_input, agent._agent, session_id)
+        st = await budgeter.check(agent._agent, session_id, task_profile.to_dict())
+        if st.should_compact:
+            await budgeter.compact(agent._agent, session_id, model, task_profile.to_dict())
+        final = await agent.run_stream(
+            user_input, session_id=session_id, working_dir=wd,
+            on_text=_on_text(console),
+            on_tool_start=_on_tool_start(console),
+            on_tool_end=_on_tool_end(console),
+            injected_message=injected_msg,
+        )
+        console.hide_thinking(); console.finish_assistant()
+        if final:
+            console._console.print(final)
+
+
 def _read() -> str:
     from rich.prompt import Prompt
     return Prompt.ask("")
@@ -197,7 +247,7 @@ def _read() -> str:
 # ── 命令 ──
 
 async def _cmd(cmd, console, perm, sessions, memory, sid,
-               budgeter, agent, is_first, turns):
+               budgeter, agent, is_first, turns, skill_registry=None):
     cmd = cmd.strip().lower(); p = cmd.split(None, 1)
 
     if cmd == "/exit":
@@ -206,6 +256,14 @@ async def _cmd(cmd, console, perm, sessions, memory, sid,
         console._console.print(HELP_TEXT)
     elif cmd == "/clear":
         os.system("cls" if os.name == "nt" else "clear")
+    elif cmd == "/skills":
+        skills = skill_registry.list_all() if skill_registry else []
+        if skills:
+            console._console.print("[bold]Skills:[/]")
+            for s in skills:
+                console._console.print(s.render_help())
+        else:
+            console.print_system("暂无自定义 skill")
     elif cmd == "/model":
         c = Config.load()
         console.print_system(f"{c.llm_model} | {c.llm_base_url} | max_turns={c.max_turns}")

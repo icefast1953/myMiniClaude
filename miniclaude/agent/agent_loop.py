@@ -71,8 +71,10 @@ class AgentLoop:
         on_text: Callable[[str], None] | None = None,
         on_tool_start: Callable[[str, dict], None] | None = None,
         on_tool_end: Callable[[str, str], None] | None = None,
+        injected_message: HumanMessage | None = None,
     ) -> str:
-        messages = self._build_input(user_input, working_dir)
+        # skill 注入模式下使用预构建消息，否则正常构建
+        messages = [injected_message] if injected_message else self._build_input(user_input, working_dir)
         cfg = {
             "configurable": {"thread_id": session_id},
             "recursion_limit": self._config.max_turns,
