@@ -58,7 +58,8 @@ class RichConsole:
     def show_tool_result(self, name: str, output: str, success: bool = True) -> None:
         """显示工具执行结果。"""
         icon = "[bold green]✓[/]" if success else "[bold red]✗[/]"
-        preview = self._truncate(output.strip(), 200)
+        limit = 3000 if name in ("read", "grep", "glob", "bash") else 500
+        preview = self._truncate(output.strip(), limit)
         self._console.print(f"  {icon} [dim]{name}: {preview}[/dim]")
 
     # ---- 状态指示 ----
