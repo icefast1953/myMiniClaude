@@ -117,10 +117,10 @@ async def main() -> None:
             console.show_thinking()
 
             # ── 任务分类 ──
-            task_profile = classifier.profile(user_input, agent._agent, session_id)
+            task_profile = await classifier.profile(user_input, agent._agent, session_id)
 
             # Token 预算检查 + 自动压缩（自适应阈值）
-            st = budgeter.check(agent._agent, session_id, task_profile.to_dict())
+            st = await budgeter.check(agent._agent, session_id, task_profile.to_dict())
             if st.should_compact:
                 mode_tag = f"[{task_profile.task_type.value}] " if task_profile.task_type != TaskType.UNKNOWN else ""
                 console.print_system(
@@ -229,7 +229,7 @@ async def _cmd(cmd, console, perm, sessions, memory, sid,
         else:
             try:
                 classifier.set_mode(TaskType(mode_str))
-                policy = classifier.profile("", agent._agent, sid).compression_policy
+                policy = (await classifier.profile("", agent._agent, sid)).compression_policy
                 console.print_system(
                     f"模式: {mode_str} | "
                     f"compact={policy.get('compact_threshold')} "

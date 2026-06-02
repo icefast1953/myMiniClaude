@@ -265,10 +265,10 @@ class TaskClassifier:
     def explicit_mode(self) -> TaskType | None:
         return self._explicit_mode
 
-    def profile(self, user_input: str, agent, session_id: str) -> TaskProfile:
+    async def profile(self, user_input: str, agent, session_id: str) -> TaskProfile:
         config = {"configurable": {"thread_id": session_id}}
         try:
-            state = agent.get_state(config)
+            state = await agent.aget_state(config)
             messages = list(state.values.get("messages", [])) if state and state.values else []
             prev_context = state.values.get("task_context", {}) if state and state.values else {}
         except Exception:
@@ -287,7 +287,7 @@ class TaskClassifier:
                 source="L1:explicit",
             )
             profile.stage = self._derive_stage_from_type(self._explicit_mode)
-            self._write_task_context(agent, config, profile, prev_history, prev_stage_history)
+            await self._write_task_context(agent, config, profile, prev_history, prev_stage_history)
             return profile
 
         # L2: intent rules
@@ -321,7 +321,7 @@ class TaskClassifier:
             stage=stage, stage_confidence=stage_conf,
             compression_policy=policy, source=source,
         )
-        self._write_task_context(agent, config, profile, prev_history, prev_stage_history)
+        await self._write_task_context(agent, config, profile, prev_history, prev_stage_history)
         return profile
 
     @staticmethod
@@ -355,9 +355,9 @@ class TaskClassifier:
         return new_stage
 
     @staticmethod
-    def _write_task_context(agent, config, profile, task_history, stage_history):
+    async def _write_task_context(agent, config, profile, task_history, stage_history):
         try:
-            agent.update_state(config, values={
+            await agent.aupdate_state(config, values={
                 "task_context": {
                     "profile": profile.to_dict(),
                     "task_history": task_history[-20:],
