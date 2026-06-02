@@ -63,6 +63,9 @@ class MemoryManager:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._db = db
         self._cache: dict[str, Memory] = {}
+        idx = self._dir / INDEX_FILE
+        if not idx.exists():
+            idx.write_text("", encoding="utf-8")
         self._load_all()
 
     def _load_all(self) -> None:
