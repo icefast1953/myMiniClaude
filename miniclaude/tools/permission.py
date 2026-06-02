@@ -22,14 +22,18 @@ class PermissionManager:
         self._session_allowed: set[tuple[str, str]] = set()
         self._session_denied: set[tuple[str, str]] = set()
 
+    def __init__(self):
+        self._rules: list[tuple[Callable[[str, str], bool], str]] = []
+        self._session_allowed: set[str] = set()  # 工具名 — "a" 记住整个工具
+        self._session_denied: set[tuple[str, str]] = set()
+
     def check(self, tool_name: str, args: dict) -> tuple[bool, str]:
-        """(allowed, reason)"""
         if tool_name in READ_TOOLS:
             return True, "只读操作"
 
         key = self._extract_key(tool_name, args)
 
-        if (tool_name, key) in self._session_allowed:
+        if tool_name in self._session_allowed:
             return True, "会话已批准"
         if (tool_name, key) in self._session_denied:
             return False, "会话已拒绝"
@@ -41,9 +45,8 @@ class PermissionManager:
         return False, "需要确认"
 
     def approve(self, tool_name: str, args: dict, remember: bool = False):
-        key = self._extract_key(tool_name, args)
         if remember:
-            self._session_allowed.add((tool_name, key))
+            self._session_allowed.add(tool_name)
 
     def deny(self, tool_name: str, args: dict, remember: bool = False):
         key = self._extract_key(tool_name, args)
