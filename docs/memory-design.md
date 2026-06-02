@@ -1,119 +1,82 @@
 # 记忆系统设计
 
-## 双层架构
+> 更新: 2026-06-02 | AsyncSqliteSaver + 自适应 Token 压缩
+
+## 三层架构
 
 ```
-┌──────────────────────────────────────────────┐
-│              miniClaude 记忆系统              │
-├────────────────────┬─────────────────────────┤
-│   短期记忆 (会话内)  │   长期记忆 (跨会话)       │
-│                    │                         │
-│ SqliteSaver        │ MemoryManager           │
-│   checkpoint       │   memory/MEMORY.md 索引  │
-│ sessions 表        │   memory/*.md 正文       │
-│ TokenBudgeter      │   自动聚合                │
-│                    │                         │
-│ 自动持久化          │ LLM 显式调用             │
-│ /sessions /new     │ memory_save/recall/forget│
-│ /switch /compact   │ /memory 查看             │
-└────────────────────┴─────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   miniClaude 记忆系统                     │
+├──────────────────┬──────────────────┬────────────────────┤
+│ 短期记忆 (会话内)  │ Token 预算 (压缩)  │ 长期记忆 (跨会话)    │
+│                  │                  │                    │
+│ AsyncSqliteSaver │ TokenBudgeter    │ MemoryManager      │
+│   checkpoint     │   L1 规则 <1ms   │   memory/*.md      │
+│ sessions 表      │   L2 LLM 摘要    │   MEMORY.md 索引    │
+│                  │   L3 状态声明    │   自动聚合           │
+│                  │                  │                    │
+│                  │ TaskClassifier   │                    │
+│                  │   四层分类        │                    │
+│                  │   自适应阈值      │                    │
+│                  │   (16K~64K)      │                    │
+│                  │                  │                    │
+│ 自动持久化        │ 超限自动触发      │ LLM 显式调用        │
+│ /sessions /new   │ /compact /token  │ memory_save/recall │
+│ /switch          │ /mode            │ /memory            │
+└──────────────────┴──────────────────┴────────────────────┘
 ```
 
 ## 短期记忆
 
-### SqliteSaver Checkpoint
-
-langgraph 的 SqliteSaver 在每次 `agent.ainvoke()` 后自动保存完整状态：
+### AsyncSqliteSaver Checkpoint
 
 ```python
-from langgraph.checkpoint.sqlite import SqliteSaver
-checkpointer = SqliteSaver.from_conn_string("miniclaude.db")
-agent = create_react_agent(model, tools, checkpointer=checkpointer)
-# 同一 thread_id 自动恢复历史
-config = {"configurable": {"thread_id": session_id}}
-await agent.ainvoke({"messages": [HumanMessage(...)]}, config=config)
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+cm = AsyncSqliteSaver.from_conn_string("miniclaude.db")
+checkpointer = await cm.__aenter__()
+agent = create_agent(model, tools, checkpointer=checkpointer)
 ```
 
-### SessionStore 会话管理
+> 所有 state 访问必须用 async (`aget_state` / `aupdate_state`)。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | TEXT PK | `20260602-143025-a1b2c3` |
-| title | TEXT | 会话标题 |
-| turn_count | INT | 对话轮数 |
-| created_at | TEXT | 创建时间 |
-| updated_at | TEXT | 更新时间 |
+### SessionStore
 
-命令: `/sessions` `/new` `/switch <id>`
+启动时**复用最近 0 轮会话**，`cleanup_empty()` 清理空会话。命令: `/sessions` `/new` `/switch`
 
-### TokenBudgeter
+## 自适应 Token 压缩
 
-| 阈值 | 默认值 | 动作 |
-|------|------|------|
-| WARNING | 4000 | 终端显示用量提示 |
-| COMPACT | 8000 | 自动压缩 |
-| KEEP_RECENT | 5 轮 | 压缩后保留 |
-
-### compact 执行流程
+### 三级降级
 
 ```
-每轮对话前 → TokenBudgeter.check()
-  → should_compact=True
-    → 分离旧消息 (保留最近 KEEP_RECENT*2 条)
-    → 取旧消息最近 30 条 → LLM 生成 200 字摘要
-    → agent.update_state() 替换为 [summary_msg] + recent_msgs
-    → 日志: "压缩完成: 48 条 → 1 条摘要 (节省 ~3500 tokens)"
-  → should_warn → 仅显示用量提示
+TaskClassifier.profile() → 四层分类 → 自适应阈值
+  ↓
+TokenBudgeter.check() → aget_state() → 估算
+  ↓ 超限
+compact():
+  L1 规则 (<1ms): ToolMessage → stats + head/tail → 估算 → OK? 停
+  L2+L3 一次 LLM: L2 摘要 + L3 YAML → 选一个 → aupdate_state(REMOVE_ALL + new)
 ```
+
+### 自适应阈值 (deepseek-v4-flash 1M context)
+
+| 任务 | compact | keep | Level |
+|------|---------|------|-------|
+| code-gen | 16K | 3 轮 | L3 |
+| explain/test | 24K | 5 轮 | L2 |
+| refactor/default | 32K | 5-6 轮 | L2 |
+| debug/env | 64K | 8-10 轮 | L1 |
 
 ## 长期记忆
 
-### 文件结构
-
-```
-memory/
-├── MEMORY.md    ← 索引 (一行一条，快速扫描)
-├── user-prefs.md → 具体记忆
-└── ...
-```
-
-### 记忆格式 (YAML frontmatter + Markdown)
-
-```markdown
----
-name: user-prefs
-description: 用户偏好
-metadata: {type: user}
----
-用户使用中文交流，偏好简洁。
-```
-
-### 自动聚合
-
-索引 > 20 条 → `should_aggregate()` → `build_aggregation_prompt()` → LLM 整理
-
-### 上下文注入
-
-每轮对话注入索引摘要:
-```
-[长期记忆] 共 3 条:
-- [user-prefs](user-prefs.md) — 语言偏好
-```
-
-## 3 个工具
-
-| 工具 | 动作 |
-|------|------|
-| `memory_save` | 写文件 + 重建索引 |
-| `memory_recall` | 关键字模糊搜索 |
-| `memory_forget` | 删除 + 更新索引 |
+文件 (`memory/*.md`) + SQLite 双写，LLM 通过 `memory_save/recall/forget` 工具管理。
+索引 > 20 条自动聚合，每轮注入摘要。
 
 ## 启动流程
 
 ```
 main.py
-  → MemoryManager('memory/')  加载长期记忆
-  → SessionStore('miniclaude.db')  初始化 SqliteSaver
-  → TokenBudgeter()  预算监控
+  → SessionStore → await async_init() → 复用会话
+  → MemoryManager → 长期记忆
+  → TaskClassifier + TokenBudgeter
   → AgentLoop(model, tools, checkpointer, memory)
 ```

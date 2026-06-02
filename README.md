@@ -1,59 +1,48 @@
 # miniClaude
 
-仿造 Claude Code 的轻量级 AI 编程助手。
+轻量级 AI 编程助手，基于 langgraph + deepseek-v4-flash (1M context)，已实现自适应 Token 压缩。
 
 ## 核心能力
 
 ### Agent 引擎
-- **langgraph ReAct Agent** — 自动 tool use 循环
-- **SqliteSaver checkpoint** — 对话状态持久化，重启恢复
-- **流式 Markdown 输出** — 逐 token 渲染
+- **create_agent** (langchain.agents) — 替代已弃用的 create_react_agent
+- **AsyncSqliteSaver checkpoint** — 对话状态持久化，启动复用最近会话
+- **流式 Markdown** — 逐 token 渲染
+
+### 自适应 Token 压缩 ✅ 已实现
+- **三级降级**: L1 规则 (<1ms) → L2 LLM 摘要 → L3 状态声明
+- **四层分类**: 显式模式 > 意图规则 > 上下文补偿 > 阶段识别
+- **自适应阈值**: code-gen=16K ~ env=64K (deepseek-v4-flash 1M context)
+- [测试报告](docs/adaptive-compression-benchmark.md): 80 tests, 分类 F1=0.92, Root Cause 91.7%
 
 ### 工具系统 (12 内置 + MCP)
-- 文件: Read / Write / Edit
-- 搜索: Grep / Glob / WebFetch
-- 执行: Bash
-- 记忆: memory_save / recall / forget
-- 组织: TodoWrite / Task (子代理)
-- **MCP 协议** — stdio 连接外部工具服务器
+- 文件: Read / Write / Edit | 搜索: Grep / Glob / WebFetch
+- 执行: Bash | 记忆: memory_save / recall / forget
+- 组织: TodoWrite / Task (子代理) | **MCP 协议**
 
 ### 权限控制
-- 3 级: y (一次) / a (记住) / n (拒绝)
-- 规则白名单: `/allow bash:echo*`
+- y (一次) / a (记住工具) / n (拒绝) + `/allow` 规则白名单
 
-### 记忆系统 (双层)
+### 命令
 
-| | 短期记忆 | 长期记忆 |
-|------|------|------|
-| 存储 | SqliteSaver checkpoint | memory/*.md + MEMORY.md 索引 |
-| 生命周期 | 当前会话 | 跨会话永久 |
-| 写入 | 自动持久化 | LLM 显式调用 |
-| 管理 | /sessions /new /switch | /memory /compact |
-| 辅助 | TokenBudgeter (4k/8k) | 自动聚合 (>20条) |
-
-### 会话管理
-- `/sessions` 列表, `/new` 新建, `/switch` 切换
-- 每会话独立 checkpoint，自动恢复历史
-
-### 双界面
-```bash
-uv run python -m miniclaude.main          # Rich REPL
-uv run python -m miniclaude.main --tui    # Textual TUI
-```
+| 命令 | 功能 |
+|------|------|
+| `/token` | Token 消耗明细 (按消息类型) |
+| `/compact` | Token 预算状态 |
+| `/mode TYPE` | 任务模式 (debug/code-gen/test/...) |
+| `/sessions` `/new` `/switch` | 会话管理 |
+| `/memory` `/allow` | 记忆 / 权限 |
 
 ## 文档
 
-- [架构文档](docs/architecture.md)
-- [记忆系统](docs/memory-design.md)
-- [工具系统](docs/tools.md)
-- [LLM 后端](docs/llm_backend.md)
-- [开发指南](docs/development.md)
+- [架构](docs/architecture.md) | [记忆系统](docs/memory-design.md) | [工具](docs/tools.md)
+- [自适应压缩测试报告](docs/adaptive-compression-benchmark.md)
+- [项目亮点分析](docs/project-highlights.md)
 
 ## 快速开始
 
 ```bash
-uv sync
-echo "DEEPSEEK_API_KEY=sk-xxx" > .env
+uv sync && echo "DEEPSEEK_API_KEY=sk-xxx" > .env
 uv run python -m miniclaude.main
 ```
 
@@ -61,12 +50,12 @@ uv run python -m miniclaude.main
 
 | 决策 | 选择 |
 |------|------|
-| Agent 框架 | langgraph ReAct |
-| 对话持久化 | SqliteSaver checkpoint |
+| Agent 框架 | langchain.agents.create_agent |
+| 对话持久化 | AsyncSqliteSaver checkpoint |
+| 默认模型 | deepseek-v4-flash (1M context) |
+| 自适应压缩 | 三级降级 + 四层分类 |
 | 工具定义 | @tool 装饰器 |
 | 记忆存储 | 文件 + SQLite 双写 |
-| LLM 适配 | ChatOpenAI 兼容 |
-| Token 估算 | 字符数 / 3.5 |
 
 ---
 
