@@ -1,33 +1,32 @@
 # miniClaude 架构文档
 
+> 最后更新: 2026-06-02 | 模型: deepseek-v4-flash (1M context)
+
 ## 模块依赖图
 
 ```
-main.py (入口)
-  ├── config/app_config.py       # 配置管理 (.env + 默认值)
+main.py (入口, async)
+  ├── config/app_config.py       # 配置管理 (.env + frozen dataclass)
   ├── cli/                       # 用户界面
-  │     ├── rich_console.py      # Rich REPL
-  │     └── textual_app.py       # Textual TUI (--tui)
-  ├── llm/model_factory.py       # 模型工厂 (ChatOpenAI)
+  │     └── rich_console.py      # Rich REPL (流式 Markdown)
+  ├── llm/model_factory.py       # 模型工厂 (ChatOpenAI, deepseek-v4-flash)
   │
   ├── agent/
-  │     ├── system_prompt.py     # 中文 System Prompt
-  │     ├── agent_loop.py        # langgraph ReAct + SqliteSaver
-  │     ├── token_budgeter.py    # Token 预算监控
-  │     └── subagent.py          # 子代理系统
+  │     ├── system_prompt.py     # 中文 System Prompt + 动态上下文 (Windows 适配)
+  │     ├── agent_loop.py        # create_agent + AsyncSqliteSaver checkpoint
+  │     ├── token_budgeter.py    # Token 预算 + 三级降级压缩 (async state)
+  │     ├── task_classifier.py   # 四层任务分类 (L1显式/L2意图/L3上下文/L4阶段)
+  │     ├── compressor.py        # L1 规则压缩 + L2+L3 LLM 双输出
+  │     └── subagent.py          # 子代理 (探索/研究/编码)
   │
   ├── tools/                     # 工具集 (12 + MCP)
-  │     ├── tool_read / write / edit / bash / grep / glob
-  │     ├── tool_task.py         # 子代理任务
-  │     ├── permission.py        # 权限控制系统
-  │     └── tool_web_fetch / tool_todo_write
+  │     ├── permission.py        # 权限 (READ/WRITE/DANGER, 工具级白名单)
+  │     └── tool_read / write / edit / bash / grep / glob / ...
   │
-  ├── memory/                    # 长期记忆
-  │     ├── memory_manager.py    # 索引 + 全文 + 自动聚合
-  │     └── memory_tools.py      # save / recall / forget
-  │
+  ├── memory/                    # 长期记忆 (文件+SQLite 双写)
   ├── mcp/                       # MCP 协议
-  │     ├── client.py            # stdio 连接管理
+  └── storage/                   # 持久化
+        └── session_store.py     # AsyncSqliteSaver + 会话复用 + 空会话清理
   │     └── tool_adapter.py      # JSON Schema → Pydantic
   │
   └── storage/
