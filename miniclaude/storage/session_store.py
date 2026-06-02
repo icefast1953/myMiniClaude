@@ -103,6 +103,19 @@ class SessionStore:
         c.close()
         return dict(row) if row else None
 
+    def cleanup_empty(self) -> int:
+        """删除所有 0 轮会话（保留最近一个）。"""
+        c = self._conn()
+        # 保留最近一个 0 轮会话，删除其余
+        c.execute(
+            "DELETE FROM sessions WHERE turn_count = 0 AND id NOT IN "
+            "(SELECT id FROM sessions WHERE turn_count = 0 "
+            "ORDER BY created_at DESC LIMIT 1)"
+        )
+        deleted = c.rowcount if hasattr(c, 'rowcount') else 0
+        c.commit(); c.close()
+        return deleted
+
     def is_new(self, sid: str) -> bool:
         s = self.get(sid)
         return s is not None and s["turn_count"] == 0

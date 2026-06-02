@@ -60,9 +60,17 @@ async def main() -> None:
     db_path = os.path.join(os.getcwd(), "miniclaude.db")
     sessions = SessionStore(db_path)
     await sessions.async_init()
-    session_id = sessions.create("新会话")
+    # 复用最近会话（0 轮则接着用），避免每次启动堆积空会话
+    recent = sessions.list(1)
+    if recent and recent[0]["turn_count"] == 0:
+        session_id = recent[0]["id"]
+        console.print_system(f"[dim]复用会话: {session_id[:20]}...[/dim]")
+    else:
+        session_id = sessions.create("新会话")
+        console.print_system(f"[dim]新会话: {session_id[:20]}...[/dim]")
+    # 清理其他 0 轮空会话
+    sessions.cleanup_empty()
     is_first = True
-    console.print_system(f"[dim]会话: {session_id[:20]}...[/dim]")
 
     # ── 长期记忆 ──
     memory = MemoryManager(os.path.join(os.getcwd(), "memory"))
