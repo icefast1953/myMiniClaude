@@ -6,6 +6,8 @@ import sys
 
 from miniclaude.agent.agent_loop import AgentLoop
 from miniclaude.agent.subagent import SubagentRunner
+from miniclaude.agent.compressor import estimate_tokens
+from miniclaude.agent.task_classifier import TaskClassifier, TaskType
 from miniclaude.agent.token_budgeter import TokenBudgeter
 from miniclaude.cli.rich_console import RichConsole
 from miniclaude.config.app_config import Config
@@ -36,6 +38,7 @@ HELP_TEXT = """[bold]命令:[/]
   /switch ID 切换会话
   /memory    长期记忆
   /compact   Token 预算
+  /mode TYPE 任务模式 (debug/code-gen/test/refactor/explain/env/auto)
   /allow PAT 权限规则"""
 
 
@@ -63,7 +66,8 @@ async def main() -> None:
     memory = MemoryManager(os.path.join(os.getcwd(), "memory"))
     set_memory_manager(memory)
 
-    # ── Token 预算 ──
+    # ── 任务分类 + Token 预算 ──
+    classifier = TaskClassifier()
     budgeter = TokenBudgeter()
 
     # ── MCP ──
@@ -110,17 +114,23 @@ async def main() -> None:
             console.print_user(user_input)
             console.show_thinking()
 
-            # Token 预算检查 + 自动压缩
-            st = budgeter.check(agent._agent, session_id)
+            # ── 任务分类 ──
+            task_profile = classifier.profile(user_input, agent._agent, session_id)
+
+            # Token 预算检查 + 自动压缩（自适应阈值）
+            st = budgeter.check(agent._agent, session_id, task_profile.to_dict())
             if st.should_compact:
+                mode_tag = f"[{task_profile.task_type.value}] " if task_profile.task_type != TaskType.UNKNOWN else ""
                 console.print_system(
-                    f"[dim]Token 超限 (~{st.total_tokens})，自动压缩...[/dim]")
+                    f"[dim]{mode_tag}Token 超限 (~{st.total_tokens})，自适应压缩...[/dim]")
                 result = await budgeter.compact(
-                    agent._agent, session_id, model)
+                    agent._agent, session_id, model, task_profile.to_dict())
                 console.print_system(f"[dim]{result}[/dim]")
             elif st.should_warn:
+                source = task_profile.source.split(":")[0] if task_profile.source else ""
                 console.print_system(
-                    f"[dim]Token: ~{st.total_tokens} ({st.message_count}条)[/dim]")
+                    f"[dim]Token: ~{st.total_tokens} ({st.message_count}条)"
+                    f" | {task_profile.task_type.value}({source})[/dim]")
 
             final = await agent.run_stream(
                 user_input, session_id=session_id,
@@ -209,17 +219,35 @@ def _cmd(cmd, console, perm, sessions, memory, sid,
             console._console.print(f"[bold]长期记忆({len(memory.list_all())}条):[/]\n{idx}")
         else:
             console.print_system("暂无")
-    elif cmd.startswith("/allow") and len(p) > 1:
+    elif cmd.startswith("/mode") and len(p) > 1:
+        mode_str = p[1].strip().lower()
+        if mode_str == "auto":
+            classifier.set_mode(None)
+            console.print_system("模式: 自动")
+        else:
+            try:
+                classifier.set_mode(TaskType(mode_str))
+                policy = classifier.profile("", agent._agent, sid).compression_policy
+                console.print_system(
+                    f"模式: {mode_str} | "
+                    f"compact={policy.get('compact_threshold')} "
+                    f"keep={policy.get('keep_recent')}轮")
+            except ValueError:
+                valid = ", ".join(t.value for t in TaskType)
+                console.print_system(f"无效模式。可用: {valid}")
         perm.add_rule(p[1], "allow")
         console.print_system(f"规则: {p[1]} → allow")
     elif cmd == "/compact":
-        st = budgeter.check(agent._agent, sid)
-        if st.should_compact:
-            console.print_system(
-                f"Token: ~{st.total_tokens} ({st.message_count}条) — 下次对话将自动压缩")
-        else:
-            console.print_system(
-                f"Token: ~{st.total_tokens} | {st.message_count}条 | 无需压缩")
+        try:
+            state = agent._agent.get_state(
+                {"configurable": {"thread_id": sid}})
+            msgs = state.values.get("messages", []) if state and state.values else []
+            total_tokens = estimate_tokens(msgs)
+            console._console.print(
+                f"Token: ~{total_tokens} | {len(msgs)}条消息 | "
+                f"compact 阈值={budgeter._compact}")
+        except Exception:
+            console.print_system("无法读取会话状态")
     else:
         console.print_system(f"未知: {cmd}")
     return (sid, is_first, turns)

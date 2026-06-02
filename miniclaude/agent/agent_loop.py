@@ -1,15 +1,28 @@
 """Agent 循环 —— langgraph + SqliteSaver checkpoint 持久化。"""
 
 from collections.abc import Callable
+from typing import TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import MessagesState
 from langgraph.prebuilt import create_react_agent
 
 from miniclaude.agent.system_prompt import SYSTEM_PROMPT, build_context_message
 from miniclaude.config.app_config import Config
 from miniclaude.memory.memory_manager import MemoryManager
+
+
+class MiniClaudeState(MessagesState):
+    """扩展 MessagesState，加入自适应压缩所需的分类上下文。
+
+    task_context 由 TaskClassifier.profile() 写入，TokenBudgeter 读取。
+    字段: {profile: dict, recent_events: list, task_history: list, stage_history: list}
+    PR2 前此字段为空 dict，compact 使用默认阈值。
+    """
+
+    task_context: dict
 
 
 class AgentLoop:
@@ -28,7 +41,10 @@ class AgentLoop:
         self._memory = memory_manager
         self._config = config or Config.load()
         self._agent = create_react_agent(
-            model=self._model, tools=tools, checkpointer=self._checkpointer,
+            model=self._model,
+            tools=tools,
+            checkpointer=self._checkpointer,
+            state_schema=MiniClaudeState,
         )
 
     def _build_input(self, user_input: str, working_dir: str,
