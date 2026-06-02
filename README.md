@@ -2,52 +2,68 @@
 
 仿造 Claude Code 的轻量级 AI 编程助手。
 
-## MVP 核心能力
+## 核心能力
 
-1. **对话式 Agent 循环**
-   - 流程：用户输入 → LLM 响应（支持 tool use）→ 执行工具 → 工具结果追加到消息列表 → 继续循环
-   - 退出条件：LLM 返回纯文本（无 tool_call）/ 达到最大轮次上限 / 用户中断
-   - 消息管理：每轮工具结果追加到上下文，LLM 可"看到"执行历史
-2. **基础工具集** — 统一的 `BaseTool` 抽象 + `ToolRegistry` 注册中心
-   - 工具定义：`name` + `description` + `parameters`(JSON Schema) + `execute()`
-   - MVP 工具：Read、Write、Edit、Bash、Grep、Glob
-3. **CLI 交互界面** — 基于 `rich` 库的 REPL 交互
-   - 流式 Markdown 渲染
-   - 思考中 Spinner 状态
-   - 彩色区分角色（用户/助手/工具调用）
-   - 升级到 Textual TUI → 后续扩展
+### Agent 引擎
+- **langgraph ReAct Agent** — 自动 tool use 循环
+- **SqliteSaver checkpoint** — 对话状态持久化，重启恢复
+- **流式 Markdown 输出** — 逐 token 渲染
 
-## 技术栈
+### 工具系统 (12 内置 + MCP)
+- 文件: Read / Write / Edit
+- 搜索: Grep / Glob / WebFetch
+- 执行: Bash
+- 记忆: memory_save / recall / forget
+- 组织: TodoWrite / Task (子代理)
+- **MCP 协议** — stdio 连接外部工具服务器
 
-- Python >= 3.13
-- **LLM 后端**：多后端支持，首期集成 DeepSeek API
-  - **架构**：内部统一 OpenAI tool call 格式，各后端通过 Adapter 转换
-    - `LLMBackend (ABC)` → `DeepSeekBackend` / `AnthropicBackend` / `OpenAICompatBackend`
-- **CLI**：`rich` 库（流式 Markdown 渲染）
-- **配置**：`python-dotenv` + `Config` 数据类，优先级：.env > 环境变量 > 默认值
-  - Anthropic API（后续）
-  - 其他 OpenAI 兼容 API（后续）
+### 权限控制
+- 3 级: y (一次) / a (记住) / n (拒绝)
+- 规则白名单: `/allow bash:echo*`
 
-## 设计决策
+### 记忆系统 (双层)
 
-- System Prompt：中文角色定义 + 工具使用规则 + 代码规范 + 回复风格，动态信息通过首条 user message 注入
-- 流式输出：LLM 响应通过 SSE/stream 逐 token 输出，`rich` 实时渲染 Markdown
-- 项目结构：模块文档集中在根目录 `docs/`，每个模块一个文档
-- 错误处理：LLM 层指数退避重试（3次），工具层统一返回 `ToolResult(success, error)` 不抛异常
-- 测试：`pytest` 单元测试（每个工具、Config）+ 集成测试（Agent 循环 + Mock LLM），核心路径必测
+| | 短期记忆 | 长期记忆 |
+|------|------|------|
+| 存储 | SqliteSaver checkpoint | memory/*.md + MEMORY.md 索引 |
+| 生命周期 | 当前会话 | 跨会话永久 |
+| 写入 | 自动持久化 | LLM 显式调用 |
+| 管理 | /sessions /new /switch | /memory /compact |
+| 辅助 | TokenBudgeter (4k/8k) | 自动聚合 (>20条) |
+
+### 会话管理
+- `/sessions` 列表, `/new` 新建, `/switch` 切换
+- 每会话独立 checkpoint，自动恢复历史
+
+### 双界面
+```bash
+uv run python -m miniclaude.main          # Rich REPL
+uv run python -m miniclaude.main --tui    # Textual TUI
+```
 
 ## 文档
 
-- [架构文档](docs/architecture.md) — 模块依赖与数据流
-- [工具系统](docs/tools.md) — 工具列表与添加指南
-- [LLM 后端](docs/llm_backend.md) — 多后端切换
-- [开发指南](docs/development.md) — 环境搭建与测试
+- [架构文档](docs/architecture.md)
+- [记忆系统](docs/memory-design.md)
+- [工具系统](docs/tools.md)
+- [LLM 后端](docs/llm_backend.md)
+- [开发指南](docs/development.md)
 
-## 后续扩展
+## 快速开始
 
-- [ ] 权限控制系统 ✅ 已完成
-- [ ] 升级到 Textual TUI 全终端界面
-- [ ] MCP 协议支持
-- [ ] **Agent Team**：多子代理协作（星型通信 → 子代理间直接交互 → 共享任务队列）
-- [ ] 记忆系统 ✅ 已完成
-- [ ] 更多工具支持 ✅ 已完成
+```bash
+uv sync
+echo "DEEPSEEK_API_KEY=sk-xxx" > .env
+uv run python -m miniclaude.main
+```
+
+## 设计决策
+
+| 决策 | 选择 |
+|------|------|
+| Agent 框架 | langgraph ReAct |
+| 对话持久化 | SqliteSaver checkpoint |
+| 工具定义 | @tool 装饰器 |
+| 记忆存储 | 文件 + SQLite 双写 |
+| LLM 适配 | ChatOpenAI 兼容 |
+| Token 估算 | 字符数 / 3.5 |

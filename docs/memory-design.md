@@ -1,105 +1,113 @@
 # 记忆系统设计
 
-## 概述
-
-模仿 Claude Code 的 Memory 机制，跨会话持久化记忆。启动时自动加载并注入对话上下文。
-
-## 存储：文件 + SQLite 双写
+## 双层架构
 
 ```
-MemoryManager
-  ├── 写入 → memory/{name}.md + miniclaude.db
-  └── 读取 → 扫描文件 + 合并 SQLite（去重）
+┌──────────────────────────────────────────────┐
+│              miniClaude 记忆系统              │
+├────────────────────┬─────────────────────────┤
+│   短期记忆 (会话内)  │   长期记忆 (跨会话)       │
+│                    │                         │
+│ SqliteSaver        │ MemoryManager           │
+│   checkpoint       │   memory/MEMORY.md 索引  │
+│ sessions 表        │   memory/*.md 正文       │
+│ TokenBudgeter      │   自动聚合                │
+│                    │                         │
+│ 自动持久化          │ LLM 显式调用             │
+│ /sessions /new     │ memory_save/recall/forget│
+│ /switch /compact   │ /memory 查看             │
+└────────────────────┴─────────────────────────┘
 ```
 
-### 文件格式（`memory/xxx.md`）
+## 短期记忆
+
+### SqliteSaver Checkpoint
+
+langgraph 的 SqliteSaver 在每次 `agent.ainvoke()` 后自动保存完整状态：
+
+```python
+from langgraph.checkpoint.sqlite import SqliteSaver
+checkpointer = SqliteSaver.from_conn_string("miniclaude.db")
+agent = create_react_agent(model, tools, checkpointer=checkpointer)
+# 同一 thread_id 自动恢复历史
+config = {"configurable": {"thread_id": session_id}}
+await agent.ainvoke({"messages": [HumanMessage(...)]}, config=config)
+```
+
+### SessionStore 会话管理
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | TEXT PK | `20260602-143025-a1b2c3` |
+| title | TEXT | 会话标题 |
+| turn_count | INT | 对话轮数 |
+| created_at | TEXT | 创建时间 |
+| updated_at | TEXT | 更新时间 |
+
+命令: `/sessions` `/new` `/switch <id>`
+
+### TokenBudgeter
+
+| 阈值 | 默认值 | 动作 |
+|------|------|------|
+| WARNING | 4000 | 终端显示用量提示 |
+| COMPACT | 8000 | 生成压缩建议 |
+| KEEP_RECENT | 5 轮 | 压缩后保留 |
+
+```
+每轮 → TokenBudgeter.check(agent, session_id)
+  → 读 checkpoint 消息列表 → 估算 token
+  → 超阈值 → 提示 / 生成 compact prompt
+```
+
+## 长期记忆
+
+### 文件结构
+
+```
+memory/
+├── MEMORY.md    ← 索引 (一行一条，快速扫描)
+├── user-prefs.md → 具体记忆
+└── ...
+```
+
+### 记忆格式 (YAML frontmatter + Markdown)
 
 ```markdown
 ---
 name: user-prefs
-description: 用户偏好设置
-metadata:
-  type: user
+description: 用户偏好
+metadata: {type: user}
 ---
-用户使用中文交流，偏好简洁回复。
+用户使用中文交流，偏好简洁。
 ```
 
-| 字段 | 作用 |
-|------|------|
-| `name` | 唯一标识（kebab-case），也作文件名 |
-| `description` | 一行摘要，用于搜索匹配 |
-| `content` | 记忆正文 |
-| `type` | user / project / reference / feedback |
+### 自动聚合
 
-### SQLite 表
+索引 > 20 条 → `should_aggregate()` → `build_aggregation_prompt()` → LLM 整理
 
-```sql
-CREATE TABLE memories (
-    name TEXT PRIMARY KEY,
-    description TEXT,
-    content TEXT,
-    mem_type TEXT DEFAULT 'user',
-    updated_at TEXT
-);
+### 上下文注入
+
+每轮对话注入索引摘要:
+```
+[长期记忆] 共 3 条:
+- [user-prefs](user-prefs.md) — 语言偏好
 ```
 
 ## 3 个工具
 
-| 工具 | 参数 | 动作 |
-|------|------|------|
-| `memory_save` | name, description, content, type | 写文件 + SQLite |
-| `memory_recall` | query（关键词） | 模糊匹配 name/description/content |
-| `memory_forget` | name | 删文件 + SQLite 记录 |
+| 工具 | 动作 |
+|------|------|
+| `memory_save` | 写文件 + 重建索引 |
+| `memory_recall` | 关键字模糊搜索 |
+| `memory_forget` | 删除 + 更新索引 |
 
-## 上下文注入
-
-### 启动时
+## 启动流程
 
 ```
-MemoryManager('memory/')._load_all()
-  → 扫描 *.md → 反序列化 Memory 对象
-  → 合并 SQLite 记录（去重）
-  → 存入内存缓存
-```
-
-### 每轮对话
-
-```
-AgentLoop._build_context()
-  → MemoryManager.get_context()
-    → "[记忆] 以下是已保存的记忆:
-        - [user-prefs] 用户偏好设置"
-    → 注入到 UserMessage
-```
-
-### 完整消息示例
-
-```
-SystemMessage: "你是 miniClaude..."
-UserMessage:
-  "[系统信息] 今天 2026-06-01, 工作目录: /project
-  
-  [记忆] 已保存的记忆:
-   - [user-prefs] 用户偏好设置
-  
-  用户: 帮我写函数"
-```
-
-## 与 ContextManager 的区别
-
-| | ContextManager | MemoryManager |
-|------|------|------|
-| 范围 | 当前会话 | 跨会话 |
-| 存储 | SQLite conversations 表 | 文件 + SQLite memories 表 |
-| 生命周期 | 会话结束即归档 | 永久保留 |
-| 管理方式 | /compact 压缩 | memory_save/recall/forget |
-
-## 完整生命周期
-
-```
-1. 用户说 "记住我喜欢简洁回复"
-2. LLM → memory_save("user-prefs", "回复风格", "用户喜欢简洁", "user")
-3. 下次启动 → 自动注入 "[记忆] ...回复风格"
-4. LLM 看到记忆 → 调整回复风格
-5. 用户说 "忘掉那个偏好" → memory_forget("user-prefs")
+main.py
+  → MemoryManager('memory/')  加载长期记忆
+  → SessionStore('miniclaude.db')  初始化 SqliteSaver
+  → TokenBudgeter()  预算监控
+  → AgentLoop(model, tools, checkpointer, memory)
 ```
