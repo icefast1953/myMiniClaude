@@ -16,9 +16,12 @@ class SessionStore:
         self._ensure_table()
 
     async def async_init(self):
-        """异步初始化 checkpointer（需要 event loop）。"""
-        cm = AsyncSqliteSaver.from_conn_string(self._db_path)
-        self._checkpointer = await cm.__aenter__()
+        """异步初始化 checkpointer（需要 event loop）。
+
+        保存 context manager 引用防止 GC 回收导致连接关闭。
+        """
+        self._checkpointer_cm = AsyncSqliteSaver.from_conn_string(self._db_path)
+        self._checkpointer = await self._checkpointer_cm.__aenter__()
 
     @property
     def checkpointer(self):
