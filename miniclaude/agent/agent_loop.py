@@ -78,8 +78,14 @@ class AgentLoop:
             "recursion_limit": self._config.max_turns,
         }
 
+        # 记录发送前的消息数，只处理本轮新增的消息（避免重播历史工具调用）
+        try:
+            state = await self._agent.aget_state(cfg)
+            seen = len(state.values.get("messages", [])) if state and state.values else 0
+        except Exception:
+            seen = len(messages)
+
         final_text = ""
-        seen = len(messages)
 
         async for event in self._agent.astream(
             {"messages": messages}, stream_mode="values", config=cfg,
