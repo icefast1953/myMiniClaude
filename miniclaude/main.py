@@ -157,6 +157,9 @@ async def main() -> None:
             if final and console._renderer.buffer == "":
                 console._console.print(final)
 
+        except asyncio.CancelledError:
+            console.hide_thinking(); console.finish_assistant()
+            console.print_system("[dim]已取消[/dim]"); continue
         except KeyboardInterrupt:
             console.hide_thinking(); console.finish_assistant()
             console.print_system("[dim]已中断[/dim]"); continue
