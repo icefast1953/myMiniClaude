@@ -37,7 +37,8 @@
 
 - [架构](docs/architecture.md) | [记忆系统](docs/memory-design.md) | [工具](docs/tools.md)
 - [自适应压缩测试报告](docs/adaptive-compression-benchmark.md)
-- [项目亮点分析](docs/project-highlights.md)
+- [自我纠错设计文档](docs/self-correction-design.md)
+- [项目亮点分析](docs/project-highlights.md) | [面试准备文档](docs/interview-prep.md)
 
 ## 快速开始
 
